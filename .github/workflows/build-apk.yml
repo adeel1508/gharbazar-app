@@ -78,6 +78,11 @@ jobs:
     outputs:
       apk_url: ${{ steps.release.outputs.apk_url }}
     steps:
+      # gh release create needs a git repo to resolve the repository and
+      # create the tag — run #2 failed with "not a git repository"
+      # because this job only downloaded the artifact.
+      - uses: actions/checkout@v4
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
