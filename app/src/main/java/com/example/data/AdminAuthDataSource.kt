@@ -3,10 +3,10 @@ package com.example.data
 import android.content.Context
 import android.util.Log
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseAuthInvalidCredentials
-import com.google.firebase.auth.FirebaseAuthInvalidUser
-import com.google.firebase.auth.FirebaseNetworkException
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,9 +103,9 @@ class FirebaseAdminAuthDataSource(
 /** Plain-language reason for a failed admin sign-in, for the UI to show. */
 internal fun friendlyAdminAuthError(error: Throwable): String =
   when (error) {
-    is FirebaseAuthInvalidCredentials ->
+    is FirebaseAuthInvalidCredentialsException ->
       "Incorrect password. Please try again."
-    is FirebaseAuthInvalidUser ->
+    is FirebaseAuthInvalidUserException ->
       "No admin account found for $GHARBAZAR_ADMIN_EMAIL."
     is FirebaseNetworkException, is IOException ->
       "Could not reach Firebase. Check your connection and try again."
