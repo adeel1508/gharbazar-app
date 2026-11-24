@@ -1,0 +1,300 @@
+package com.example.data
+
+import android.content.Context
+import android.util.Log
+import com.example.model.CartItem
+import com.example.model.ConfirmedOrder
+import com.example.model.OrderStatus
+import com.example.model.Product
+import com.example.model.ProductCategory
+import com.example.model.ProductSpec
+import com.google.firebase.FirebaseApp
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.MetadataChanges
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.firestoreSettings
+import com.google.firebase.firestore.persistentCacheSettings
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.tasks.await
+
+sealed interface CloudOrdersSnapshot {
+  data class Loaded(val orders: List<ConfirmedOrder>, val isFromCache: Boolean) :
+    CloudOrdersSnapshot
+
+  data object Empty : CloudOrdersSnapshot
+
+  data class Unavailable(val reason: String) : CloudOrdersSnapshot
+}
+
+interface CloudOrderDataSource {
+  val isConfigured: Boolean
+
+  fun observeOrders(): Flow<CloudOrdersSnapshot>
+
+  suspend fun saveOrder(order: ConfirmedOrder): Result<Unit>
+
+  suspend fun updateOrderStatus(orderNumber: String, status: OrderStatus): Result<Unit>
+}
+
+/**
+ * Firebase Firestore data source for GharBazar's `orders` collection (guest COD orders, no login).
+ */
+class FirestoreOrderDataSource(
+  context: Context,
+) : CloudOrderDataSource {
+
+  private val appContext = context.applicationContext
+
+  private val firestore: FirebaseFirestore? by lazy {
+    runCatching {
+      val apps = FirebaseApp.getApps(appContext)
+      val app =
+        if (apps.isNotEmpty()) {
+          apps.first()
+        } else {
+          FirebaseApp.initializeApp(appContext)
+        }
+      if (app == null) {
+        null
+      } else {
+        FirebaseFirestore.getInstance(app).apply {
+          firestoreSettings = firestoreSettings {
+            setLocalCacheSettings(persistentCacheSettings { })
+          }
+        }
+      }
+    }.onFailure { error ->
+      Log.w(TAG, "Firebase Firestore unavailable for orders: ${error.message}")
+    }.getOrNull()
+  }
+
+  override val isConfigured: Boolean
+    get() = firestore != null
+
+  override fun observeOrders(): Flow<CloudOrdersSnapshot> {
+    val db =
+      firestore
+        ?: return flowOf(
+          CloudOrdersSnapshot.Unavailable(
+            "Firebase google-services.json is not configured."
+          )
+        )
+
+    return callbackFlow {
+      val registration =
+        db.collection(ORDERS_COLLECTION)
+          .orderBy("timestamp", Query.Direction.DESCENDING)
+          .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
+            if (error != null) {
+              Log.w(TAG, "Firestore orders snapshot error: ${error.message}")
+              trySend(
+                CloudOrdersSnapshot.Unavailable(
+                  error.localizedMessage ?: "Unable to load orders from Cloud Firestore"
+                )
+              )
+              return@addSnapshotListener
+            }
+
+            if (snapshot == null || snapshot.isEmpty) {
+              trySend(CloudOrdersSnapshot.Empty)
+              return@addSnapshotListener
+            }
+
+            val parsedOrders =
+              snapshot.documents
+                .mapNotNull { it.toConfirmedOrderOrNull() }
+                .sortedByDescending { it.timestamp }
+            if (parsedOrders.isEmpty()) {
+              trySend(CloudOrdersSnapshot.Empty)
+            } else {
+              trySend(
+                CloudOrdersSnapshot.Loaded(
+                  orders = parsedOrders,
+                  isFromCache = snapshot.metadata.isFromCache,
+                )
+              )
+            }
+          }
+
+      awaitClose { registration.remove() }
+    }
+  }
+
+  override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> {
+    val db =
+      firestore
+        ?: return Result.failure(
+          IllegalStateException("Firebase google-services.json not configured")
+        )
+    return runCatching {
+      db.collection(ORDERS_COLLECTION)
+        .document(order.orderNumber)
+        .set(order.toFirestoreOrderMap())
+        .await()
+    }.map { }
+  }
+
+  override suspend fun updateOrderStatus(
+    orderNumber: String,
+    status: OrderStatus,
+  ): Result<Unit> {
+    val db =
+      firestore
+        ?: return Result.failure(
+          IllegalStateException("Firebase google-services.json not configured")
+        )
+    return runCatching {
+      db.collection(ORDERS_COLLECTION)
+        .document(orderNumber)
+        .update("status", status.wireValue)
+        .await()
+    }.map { }
+  }
+
+  private fun DocumentSnapshot.toConfirmedOrderOrNull(): ConfirmedOrder? {
+    val orderNumber = getString("orderNumber")?.takeIf { it.isNotBlank() } ?: id
+    val customerName = getString("customerName")?.takeIf { it.isNotBlank() } ?: return null
+    val phoneNumber = getString("phoneNumber").orEmpty()
+    val deliveryAddress = getString("deliveryAddress").orEmpty()
+    val city = getString("city").orEmpty()
+    val totalPkr = (get("totalPkr") as? Number)?.toInt() ?: 0
+    val timestamp =
+      (get("timestamp") as? Number)?.toLong()
+        ?: getTimestamp("timestamp")?.toDate()?.time
+        ?: 0L
+    val status = OrderStatus.fromWireValue(getString("status"))
+
+    val rawItems = get("items") as? List<*>
+    val items =
+      rawItems?.mapNotNull { entry ->
+        val itemMap = entry as? Map<*, *> ?: return@mapNotNull null
+        val productMap = itemMap["product"] as? Map<*, *> ?: return@mapNotNull null
+        val quantity = (itemMap["quantity"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 1
+        val product = parseProductFromMap(productMap) ?: return@mapNotNull null
+        CartItem(product = product, quantity = quantity)
+      }.orEmpty()
+
+    return ConfirmedOrder(
+      orderNumber = orderNumber,
+      customerName = customerName,
+      phoneNumber = phoneNumber,
+      deliveryAddress = deliveryAddress,
+      city = city,
+      items = items,
+      totalPkr = totalPkr,
+      timestamp = timestamp,
+      status = status,
+    )
+  }
+
+  private fun parseProductFromMap(map: Map<*, *>): Product? {
+    val name = (map["name"] as? String)?.takeIf { it.isNotBlank() } ?: return null
+    val pricePkr = (map["pricePkr"] as? Number)?.toInt() ?: return null
+    val id = (map["id"] as? String)?.takeIf { it.isNotBlank() } ?: name
+    val categoryName = map["category"] as? String ?: ProductCategory.BLANKETS.name
+    val category =
+      ProductCategory.entries.firstOrNull {
+        it.name.equals(categoryName, ignoreCase = true) ||
+          it.label.equals(categoryName, ignoreCase = true)
+      } ?: ProductCategory.BLANKETS
+    val fabric = (map["fabric"] as? String).orEmpty().ifBlank { "Standard" }
+    val size = (map["size"] as? String).orEmpty().ifBlank { "Standard" }
+    val description = (map["description"] as? String).orEmpty()
+    val imageKey = (map["imageKey"] as? String).orEmpty()
+    val imageUri = (map["imageUri"] as? String)?.takeIf { it.isNotBlank() }
+    val inStock = map["inStock"] as? Boolean ?: true
+    val stockQuantity = (map["stockQuantity"] as? Number)?.toInt() ?: if (inStock) 10 else 0
+    val shortSpec =
+      (map["shortSpec"] as? String)?.takeIf { it.isNotBlank() }
+        ?: listOf(size, fabric).filter { it.isNotBlank() }.joinToString(" • ")
+
+    val rawSpecs = map["specs"] as? List<*>
+    val parsedSpecs =
+      rawSpecs
+        ?.mapNotNull { entry ->
+          val specMap = entry as? Map<*, *> ?: return@mapNotNull null
+          val label = specMap["label"] as? String ?: return@mapNotNull null
+          val value = specMap["value"] as? String ?: return@mapNotNull null
+          ProductSpec(label, value)
+        }
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf(
+          ProductSpec("Category", category.label),
+          ProductSpec("Size / Cutting", size),
+          ProductSpec("Fabric", fabric),
+        )
+
+    return Product(
+      id = id,
+      name = name,
+      pricePkr = pricePkr,
+      category = category,
+      fabric = fabric,
+      size = size,
+      shortSpec = shortSpec,
+      specs = parsedSpecs,
+      description = description,
+      imageKey = imageKey,
+      imageRes = ProductCatalog.resolveDrawableForKey(imageKey, category),
+      imageUri = imageUri,
+      inStock = inStock,
+      stockQuantity = stockQuantity,
+    )
+  }
+
+  companion object {
+    const val ORDERS_COLLECTION = "orders"
+    private const val TAG = "FirestoreOrderSource"
+
+    /**
+     * Builds the exact Firestore document payload for guest COD orders.
+     * Contains NO userId field.
+     */
+    fun ConfirmedOrder.toFirestoreOrderMap(): Map<String, Any> {
+      return mapOf(
+        "orderNumber" to orderNumber,
+        "customerName" to customerName,
+        "phoneNumber" to phoneNumber,
+        "deliveryAddress" to deliveryAddress,
+        "city" to city,
+        "items" to
+          items.map { cartItem ->
+            mapOf(
+              "product" to cartItem.product.toFirestoreProductMap(),
+              "quantity" to cartItem.quantity,
+            )
+          },
+        "totalPkr" to totalPkr,
+        "timestamp" to timestamp,
+        "status" to status.wireValue,
+      )
+    }
+
+    private fun Product.toFirestoreProductMap(): Map<String, Any> {
+      val map =
+        mutableMapOf<String, Any>(
+          "id" to id,
+          "name" to name,
+          "pricePkr" to pricePkr,
+          "category" to category.name,
+          "fabric" to fabric,
+          "size" to size,
+          "shortSpec" to shortSpec,
+          "specs" to specs.map { mapOf("label" to it.label, "value" to it.value) },
+          "description" to description,
+          "imageKey" to imageKey,
+          "imageRes" to imageRes,
+          "inStock" to inStock,
+          "stockQuantity" to stockQuantity,
+        )
+      if (!imageUri.isNullOrBlank()) {
+        map["imageUri"] = imageUri
+      }
+      return map
+    }
+  }
+}

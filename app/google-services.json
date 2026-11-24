@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "374383787334",
+    "project_id": "gharbazar-d8f79",
+    "storage_bucket": "gharbazar-d8f79.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:374383787334:android:d23f870f59a3bd6e1b7947",
+        "android_client_info": {
+          "package_name": "com.aistudio.gharbazar.kmpqrz"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDhACx9RMzpI34qaXm7T_TfDos-crWycZA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

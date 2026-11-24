@@ -1,0 +1,6 @@
+{
+  "name": "GharBazar",
+  "description": "Online store in Pakistan for blankets and men's unstitched suits with Cash on Delivery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
