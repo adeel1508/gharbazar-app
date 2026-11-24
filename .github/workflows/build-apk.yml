@@ -39,6 +39,14 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default packages list ("tools platform-tools")
+          # is stale: the old "tools" SDK package no longer exists in
+          # Google's repository, so sdkmanager fails with "Failed to
+          # find package 'tools'" (run #1, 2026-11-24). Install only
+          # packages that exist; the runner image already ships most
+          # SDK components, sdkmanager skips those already installed.
+          packages: platform-tools build-tools;36.0.0 platforms;android-36
 
       - name: Decode release keystore
         env:
