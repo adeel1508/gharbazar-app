@@ -115,5 +115,8 @@ jobs:
           VERSION_CODE: ${{ needs.build.outputs.version_code }}
           APK_URL: ${{ needs.release.outputs.apk_url }}
         run: |
-          pip install --quiet google-auth
+          # google-auth's requests transport needs the requests package
+          # too (run #3 failed with ModuleNotFoundError: No module
+          # named 'requests' when only google-auth was installed).
+          pip install --quiet google-auth requests
           python3 .github/scripts/update_firestore_version.py
