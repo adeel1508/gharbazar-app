@@ -24,6 +24,10 @@ class ProductRepository(
   private val _products = MutableStateFlow(fallbackCatalog)
   val products: StateFlow<List<Product>> = _products.asStateFlow()
 
+  /** True when a cloud Firestore catalogue is configured (writes go to the cloud). */
+  val isCloudConfigured: Boolean
+    get() = cloudDataSource.isConfigured
+
   private val _syncStatus =
     MutableStateFlow<CatalogSyncStatus>(
       if (cloudDataSource.isConfigured) {

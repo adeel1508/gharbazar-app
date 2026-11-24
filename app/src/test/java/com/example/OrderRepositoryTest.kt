@@ -8,6 +8,7 @@ import com.example.data.ProductCatalog
 import com.example.model.CartItem
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
+import com.example.model.ProductCategory
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,7 +73,7 @@ class OrderRepositoryTest {
     assertEquals(product.id, productMap["id"])
     assertEquals(product.name, productMap["name"])
     assertEquals(product.pricePkr, productMap["pricePkr"])
-    assertEquals(product.category.name, productMap["category"])
+    assertEquals(ProductCategory.wireValue(product.category), productMap["category"])
     assertEquals(product.fabric, productMap["fabric"])
     assertEquals(product.size, productMap["size"])
     assertEquals(product.description, productMap["description"])

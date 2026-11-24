@@ -78,6 +78,7 @@ import com.example.R
 import com.example.model.Product
 import com.example.model.ProductCategory
 import com.example.model.SortOption
+import com.example.model.categoryFiltersFor
 import com.example.model.formatPkr
 import com.example.ui.components.CachedProductImage
 import com.example.ui.components.StoreTrustStrip
@@ -87,7 +88,7 @@ import com.example.viewmodel.StoreUiState
 fun HomeScreen(
   uiState: StoreUiState,
   onSearchQueryChange: (String) -> Unit,
-  onSelectCategory: (ProductCategory) -> Unit,
+  onSelectCategory: (String) -> Unit,
   onSelectSortOption: (SortOption) -> Unit,
   onResetFilters: () -> Unit,
   onProductClick: (Product) -> Unit,
@@ -178,11 +179,7 @@ fun HomeScreen(
     item(span = { GridItemSpan(maxLineSpan) }, key = "category_row") {
       CategoryFilterRow(
         selectedCategory = uiState.selectedCategory,
-        totalCount = uiState.allProducts.size,
-        blanketsCount =
-          uiState.allProducts.count { it.category == ProductCategory.BLANKETS },
-        suitsCount =
-          uiState.allProducts.count { it.category == ProductCategory.MENS_SUITS },
+        categories = categoryFiltersFor(uiState.allProducts),
         onSelectCategory = onSelectCategory,
       )
     }
@@ -324,8 +321,8 @@ private fun MarketplaceTopHeader(
 
 @Composable
 private fun StorePromoBanner(
-  selectedCategory: ProductCategory,
-  onSelectCategory: (ProductCategory) -> Unit,
+  selectedCategory: String,
+  onSelectCategory: (String) -> Unit,
 ) {
   val bannerGradient =
     Brush.linearGradient(
@@ -384,13 +381,13 @@ private fun StorePromoBanner(
         ) {
           BannerCategoryShortcut(
             label = "Shop Blankets",
-            active = selectedCategory == ProductCategory.BLANKETS,
-            onClick = { onSelectCategory(ProductCategory.BLANKETS) },
+            active = selectedCategory == ProductCategory.BLANKETS.label,
+            onClick = { onSelectCategory(ProductCategory.BLANKETS.label) },
           )
           BannerCategoryShortcut(
             label = "Shop Men's Suits",
-            active = selectedCategory == ProductCategory.MENS_SUITS,
-            onClick = { onSelectCategory(ProductCategory.MENS_SUITS) },
+            active = selectedCategory == ProductCategory.MENS_SUITS.label,
+            onClick = { onSelectCategory(ProductCategory.MENS_SUITS.label) },
           )
         }
       }
@@ -425,37 +422,25 @@ private fun BannerCategoryShortcut(
 
 @Composable
 private fun CategoryFilterRow(
-  selectedCategory: ProductCategory,
-  totalCount: Int,
-  blanketsCount: Int,
-  suitsCount: Int,
-  onSelectCategory: (ProductCategory) -> Unit,
+  selectedCategory: String,
+  categories: List<Pair<String, Int>>,
+  onSelectCategory: (String) -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    ProductCategory.entries.forEach { category ->
-      val count =
-        when (category) {
-          ProductCategory.ALL -> totalCount
-          ProductCategory.BLANKETS -> blanketsCount
-          ProductCategory.MENS_SUITS -> suitsCount
-        }
+    categories.forEach { (label, count) ->
+      val isSelected = selectedCategory == label
       val tag =
-        when (category) {
-          ProductCategory.ALL -> "filter_all"
-          ProductCategory.BLANKETS -> "filter_blankets"
-          ProductCategory.MENS_SUITS -> "filter_mens_suits"
-        }
-      val isSelected = selectedCategory == category
+        "filter_" + label.lowercase().map { if (it.isLetterOrDigit()) it else '_' }.joinToString("")
       FilterChip(
         selected = isSelected,
-        onClick = { onSelectCategory(category) },
+        onClick = { onSelectCategory(label) },
         modifier = Modifier.minimumInteractiveComponentSize().testTag(tag),
         label = {
           Text(
-            text = "${category.label} ($count)",
+            text = "$label ($count)",
             style = MaterialTheme.typography.labelLarge,
           )
         },
@@ -587,7 +572,7 @@ private fun ProductGridCard(
           shape = CircleShape,
         ) {
           Text(
-            text = product.category.label,
+            text = product.category,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),

@@ -309,7 +309,7 @@ private fun ProductDetailInfoColumn(product: Product, modifier: Modifier = Modif
         shape = CircleShape,
       ) {
         Text(
-          text = product.category.label,
+          text = product.category,
           style = MaterialTheme.typography.labelMedium,
           fontWeight = FontWeight.SemiBold,
           modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),

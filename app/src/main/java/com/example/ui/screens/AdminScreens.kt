@@ -99,6 +99,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.CatalogSyncStatus
+import com.example.data.GHARBAZAR_ADMIN_EMAIL
 import com.example.data.ProductCatalog
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
@@ -128,7 +129,7 @@ fun AdminRouteScreen(
     editingId: String?,
     name: String,
     pricePkr: Int,
-    category: ProductCategory,
+    category: String,
     fabric: String,
     size: String,
     description: String,
@@ -140,6 +141,8 @@ fun AdminRouteScreen(
   onDeleteProduct: (String) -> Unit,
   onUpdateOrderStatus: (String, OrderStatus) -> Unit,
   onClearNotice: () -> Unit,
+  onAdminSignIn: (String) -> Unit,
+  onAdminSignOut: () -> Unit,
 ) {
   BackHandler(onBack = onBackToStore)
 
@@ -162,6 +165,8 @@ fun AdminRouteScreen(
       onDeleteProduct = onDeleteProduct,
       onUpdateOrderStatus = onUpdateOrderStatus,
       onClearNotice = onClearNotice,
+      onAdminSignIn = onAdminSignIn,
+      onAdminSignOut = onAdminSignOut,
     )
   }
 }
@@ -447,7 +452,7 @@ private fun AdminDashboardScreen(
     editingId: String?,
     name: String,
     pricePkr: Int,
-    category: ProductCategory,
+    category: String,
     fabric: String,
     size: String,
     description: String,
@@ -459,6 +464,8 @@ private fun AdminDashboardScreen(
   onDeleteProduct: (String) -> Unit,
   onUpdateOrderStatus: (String, OrderStatus) -> Unit,
   onClearNotice: () -> Unit,
+  onAdminSignIn: (String) -> Unit,
+  onAdminSignOut: () -> Unit,
 ) {
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedTab by remember { mutableStateOf(AdminDashboardTab.PRODUCTS) }
@@ -574,6 +581,15 @@ private fun AdminDashboardScreen(
             AdminCloudSyncCard(syncStatus = uiState.syncStatus)
           }
 
+          item(key = "admin_auth") {
+            AdminFirebaseSignInCard(
+              isSignedIn = uiState.isAdminSignedIn,
+              authError = uiState.adminAuthError,
+              onSignIn = onAdminSignIn,
+              onSignOut = onAdminSignOut,
+            )
+          }
+
           if (uiState.allProducts.isEmpty()) {
             item(key = "empty_admin") {
               Card(
@@ -590,7 +606,7 @@ private fun AdminDashboardScreen(
                 ) {
                   Text("No products in catalogue", style = MaterialTheme.typography.titleMedium)
                   Text(
-                    "Tap + to add a blanket or men's unstitched suit.",
+                    "Tap + to add a product in any category.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )
@@ -620,6 +636,15 @@ private fun AdminDashboardScreen(
         ) {
           item(key = "orders_sync_status") {
             AdminCloudSyncCard(syncStatus = uiState.syncStatus)
+          }
+
+          item(key = "admin_auth_orders") {
+            AdminFirebaseSignInCard(
+              isSignedIn = uiState.isAdminSignedIn,
+              authError = uiState.adminAuthError,
+              onSignIn = onAdminSignIn,
+              onSignOut = onAdminSignOut,
+            )
           }
 
           if (uiState.adminOrders.isEmpty()) {
@@ -796,6 +821,129 @@ private fun AdminCloudSyncCard(syncStatus: CatalogSyncStatus) {
   }
 }
 
+/**
+ * Firebase sign-in for cloud admin work. This is separate from the local
+ * admin password above it: the password only unlocks this panel on this
+ * phone, while this sign-in proves to Firestore that the user is the admin
+ * (adeel.arif0786@gmail.com), which the security rules require before any
+ * product add/edit/delete or order-status change is accepted. The session
+ * persists, so the owner signs in once.
+ */
+@Composable
+private fun AdminFirebaseSignInCard(
+  isSignedIn: Boolean,
+  authError: String?,
+  onSignIn: (String) -> Unit,
+  onSignOut: () -> Unit,
+) {
+  var password by remember { mutableStateOf("") }
+  var showPassword by remember { mutableStateOf(false) }
+
+  LaunchedEffect(isSignedIn) {
+    if (isSignedIn) {
+      password = ""
+    }
+  }
+
+  Card(
+    modifier = Modifier.fillMaxWidth().testTag("admin_firebase_signin_card"),
+    colors =
+      CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
+      ),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    shape = MaterialTheme.shapes.medium,
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(
+          imageVector = if (isSignedIn) Icons.Filled.CloudDone else Icons.Filled.Lock,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(24.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text =
+              if (isSignedIn) "Signed in to Cloud Admin" else "Cloud Admin Sign In",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text =
+              if (isSignedIn) {
+                "Signed in as $GHARBAZAR_ADMIN_EMAIL — product and order changes are unlocked."
+              } else {
+                "Sign in once with your GharBazar account to add, edit or delete products and to see orders here."
+              },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        if (isSignedIn) {
+          TextButton(
+            onClick = onSignOut,
+            modifier = Modifier.testTag("admin_firebase_signout_button"),
+          ) {
+            Text("Sign out")
+          }
+        }
+      }
+
+      if (!isSignedIn) {
+        Text(
+          text = "Account: $GHARBAZAR_ADMIN_EMAIL",
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.SemiBold,
+        )
+        OutlinedTextField(
+          value = password,
+          onValueChange = {
+            password = it
+          },
+          label = { Text("Account Password") },
+          singleLine = true,
+          isError = authError != null,
+          supportingText = authError?.let { msg -> { Text(msg) } },
+          visualTransformation =
+            if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+          trailingIcon = {
+            IconButton(onClick = { showPassword = !showPassword }) {
+              Icon(
+                imageVector =
+                  if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                contentDescription = "Toggle password visibility",
+              )
+            }
+          },
+          keyboardOptions =
+            KeyboardOptions(
+              keyboardType = KeyboardType.Password,
+              imeAction = ImeAction.Done,
+            ),
+          modifier = Modifier.fillMaxWidth().testTag("admin_firebase_password_input"),
+        )
+        Button(
+          onClick = { onSignIn(password) },
+          enabled = password.isNotBlank(),
+          modifier =
+            Modifier.fillMaxWidth()
+              .height(48.dp)
+              .testTag("admin_firebase_signin_button"),
+        ) {
+          Text("Sign in to Cloud Admin")
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun AdminProductRowCard(
   product: Product,
@@ -836,7 +984,7 @@ private fun AdminProductRowCard(
           overflow = TextOverflow.Ellipsis,
         )
         Text(
-          text = "${formatPkr(product.pricePkr)} • ${product.category.label}",
+          text = "${formatPkr(product.pricePkr)} • ${product.category}",
           style = MaterialTheme.typography.labelLarge,
           color = MaterialTheme.colorScheme.primary,
           fontWeight = FontWeight.Bold,
@@ -1136,7 +1284,7 @@ private fun AdminProductEditorDialog(
   onSave: (
     name: String,
     pricePkr: Int,
-    category: ProductCategory,
+    category: String,
     fabric: String,
     size: String,
     description: String,
@@ -1151,8 +1299,25 @@ private fun AdminProductEditorDialog(
   var priceText by remember(initialProduct) {
     mutableStateOf(initialProduct?.pricePkr?.toString().orEmpty())
   }
-  var category by remember(initialProduct) {
-    mutableStateOf(initialProduct?.category ?: ProductCategory.BLANKETS)
+  var categoryLabel by remember(initialProduct) {
+    mutableStateOf(
+      initialProduct?.category?.takeIf { ProductCategory.isKnownLabel(it) }
+        ?: ProductCategory.BLANKETS.label
+    )
+  }
+  var useCustomCategory by remember(initialProduct) {
+    mutableStateOf(
+      initialProduct != null && !ProductCategory.isKnownLabel(initialProduct.category)
+    )
+  }
+  var customCategory by remember(initialProduct) {
+    mutableStateOf(
+      if (initialProduct != null && !ProductCategory.isKnownLabel(initialProduct.category)) {
+        initialProduct.category
+      } else {
+        ""
+      }
+    )
   }
   var fabric by remember(initialProduct) { mutableStateOf(initialProduct?.fabric.orEmpty()) }
   var size by remember(initialProduct) { mutableStateOf(initialProduct?.size.orEmpty()) }
@@ -1234,11 +1399,43 @@ private fun AdminProductEditorDialog(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           listOf(ProductCategory.BLANKETS, ProductCategory.MENS_SUITS).forEach { cat ->
             FilterChip(
-              selected = category == cat,
-              onClick = { category = cat },
+              selected = !useCustomCategory && categoryLabel == cat.label,
+              onClick = {
+                useCustomCategory = false
+                categoryLabel = cat.label
+                errorText = null
+              },
               label = { Text(cat.label) },
+              modifier = Modifier.testTag("admin_category_chip_${cat.name.lowercase()}"),
             )
           }
+          FilterChip(
+            selected = useCustomCategory,
+            onClick = {
+              useCustomCategory = true
+              errorText = null
+            },
+            label = { Text("Other…") },
+            modifier = Modifier.testTag("admin_category_chip_other"),
+          )
+        }
+
+        if (useCustomCategory) {
+          OutlinedTextField(
+            value = customCategory,
+            onValueChange = {
+              customCategory = it
+              errorText = null
+            },
+            label = { Text("Custom Category (e.g. Bedsheets, Curtains)") },
+            singleLine = true,
+            keyboardOptions =
+              KeyboardOptions(
+                capitalization = KeyboardCapitalization.Words,
+                imeAction = ImeAction.Next,
+              ),
+            modifier = Modifier.fillMaxWidth().testTag("admin_product_custom_category_input"),
+          )
         }
 
         OutlinedTextField(
@@ -1392,10 +1589,18 @@ private fun AdminProductEditorDialog(
         onClick = {
           val parsedPrice = priceText.toIntOrNull()
           val parsedQty = stockQtyText.toIntOrNull() ?: 0
+          val effectiveCategory =
+            if (useCustomCategory) customCategory.trim() else categoryLabel
           when {
             name.isBlank() -> errorText = "Product name is required."
             parsedPrice == null || parsedPrice <= 0 ->
               errorText = "Enter a valid price in PKR."
+            useCustomCategory && effectiveCategory.isBlank() ->
+              errorText = "Enter a custom category name."
+            effectiveCategory.equals(ProductCategory.ALL.label, ignoreCase = true) ->
+              errorText = "\"All\" cannot be used as a category name."
+            effectiveCategory.length > 40 ->
+              errorText = "Category name must be 40 characters or fewer."
             fabric.isBlank() -> errorText = "Fabric detail is required."
             size.isBlank() -> errorText = "Size / cutting detail is required."
             description.isBlank() -> errorText = "Full description is required."
@@ -1404,7 +1609,7 @@ private fun AdminProductEditorDialog(
               onSave(
                 name,
                 parsedPrice,
-                category,
+                effectiveCategory,
                 fabric,
                 size,
                 description,

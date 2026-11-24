@@ -226,7 +226,7 @@ private fun CartItemCard(
         }
 
         Text(
-          text = "${formatPkr(item.product.pricePkr)} each • ${item.product.category.label}",
+          text = "${formatPkr(item.product.pricePkr)} each • ${item.product.category}",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

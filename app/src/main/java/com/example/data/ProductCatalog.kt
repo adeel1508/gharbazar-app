@@ -54,12 +54,15 @@ object ProductCatalog {
     )
 
   @DrawableRes
-  fun resolveDrawableForKey(key: String, fallbackCategory: ProductCategory = ProductCategory.BLANKETS): Int {
+  fun resolveDrawableForKey(
+    key: String,
+    fallbackCategoryLabel: String = ProductCategory.BLANKETS.label,
+  ): Int {
     return photoOptions.find { it.key == key }?.imageRes
-      ?: if (fallbackCategory == ProductCategory.BLANKETS) {
-        R.drawable.img_blanket_plain_blue_1795368928571
-      } else {
+      ?: if (ProductCategory.isSuitCategory(fallbackCategoryLabel)) {
         R.drawable.img_suit_boski_1795368943150
+      } else {
+        R.drawable.img_blanket_plain_blue_1795368928571
       }
   }
 
@@ -69,7 +72,7 @@ object ProductCatalog {
         id = "blanket_cozy_fleece_black",
         name = "Cozy Fleece Printed Double Bed Blanket",
         pricePkr = 1949,
-        category = ProductCategory.BLANKETS,
+        category = ProductCategory.BLANKETS.label,
         fabric = "Fleece",
         size = "Double Bed, 89x90 inches",
         shortSpec = "Double Bed • 89x90 in • Fleece • Black",
@@ -92,7 +95,7 @@ object ProductCatalog {
         id = "blanket_fleece_navy_white",
         name = "Fleece Printed Double Bed Blanket Navy White",
         pricePkr = 1949,
-        category = ProductCategory.BLANKETS,
+        category = ProductCategory.BLANKETS.label,
         fabric = "Fleece",
         size = "Double Bed, 88x90 inches",
         shortSpec = "Double Bed • 88x90 in • Fleece • Blue",
@@ -115,7 +118,7 @@ object ProductCatalog {
         id = "blanket_stylish_plain_blue",
         name = "Stylish Fleece Plain Double Bed Blanket",
         pricePkr = 2599,
-        category = ProductCategory.BLANKETS,
+        category = ProductCategory.BLANKETS.label,
         fabric = "Fleece",
         size = "Double Bed, 89x90 inches",
         shortSpec = "Double Bed • 89x90 in • Fleece • Plain Blue",
@@ -138,7 +141,7 @@ object ProductCatalog {
         id = "blanket_3d_embossed_red",
         name = "3D Panel Fleece Embossed Double Bed Blanket",
         pricePkr = 3599,
-        category = ProductCategory.BLANKETS,
+        category = ProductCategory.BLANKETS.label,
         fabric = "Fleece",
         size = "Double Bed, 90 inches",
         shortSpec = "Double Bed • 90 in • 3D Embossed • Red",
@@ -161,7 +164,7 @@ object ProductCatalog {
         id = "suit_boski_plain",
         name = "Men's Unstitched Boski Plain Suit",
         pricePkr = 1999,
-        category = ProductCategory.MENS_SUITS,
+        category = ProductCategory.MENS_SUITS.label,
         fabric = "Boski fabric",
         size = "Unstitched",
         shortSpec = "Unstitched • Boski Fabric • Plain",
@@ -182,7 +185,7 @@ object ProductCatalog {
         id = "suit_wool_plain_brown",
         name = "Men's Unstitched Wool Plain Suit",
         pricePkr = 2299,
-        category = ProductCategory.MENS_SUITS,
+        category = ProductCategory.MENS_SUITS.label,
         fabric = "Wool",
         size = "Unstitched, 4 meter cutting",
         shortSpec = "Unstitched • Wool • Brown • 4m Cutting",
@@ -205,7 +208,7 @@ object ProductCatalog {
         id = "suit_wash_and_wear_blue",
         name = "Men's Unstitched Wash And Wear Plain Suit",
         pricePkr = 2999,
-        category = ProductCategory.MENS_SUITS,
+        category = ProductCategory.MENS_SUITS.label,
         fabric = "Wash and Wear",
         size = "Unstitched, 4 meter cutting",
         shortSpec = "Unstitched • Wash and Wear • Blue • 4m",
@@ -228,7 +231,7 @@ object ProductCatalog {
         id = "suit_cotton_plain",
         name = "Men's Unstitched Cotton Plain Suit",
         pricePkr = 3099,
-        category = ProductCategory.MENS_SUITS,
+        category = ProductCategory.MENS_SUITS.label,
         fabric = "Cotton",
         size = "Unstitched, 4.5 meter cutting",
         shortSpec = "Unstitched • Cotton • Plain • 4.5m Cutting",

@@ -195,12 +195,7 @@ class FirestoreOrderDataSource(
     val name = (map["name"] as? String)?.takeIf { it.isNotBlank() } ?: return null
     val pricePkr = (map["pricePkr"] as? Number)?.toInt() ?: return null
     val id = (map["id"] as? String)?.takeIf { it.isNotBlank() } ?: name
-    val categoryName = map["category"] as? String ?: ProductCategory.BLANKETS.name
-    val category =
-      ProductCategory.entries.firstOrNull {
-        it.name.equals(categoryName, ignoreCase = true) ||
-          it.label.equals(categoryName, ignoreCase = true)
-      } ?: ProductCategory.BLANKETS
+    val category = ProductCategory.fromStored(map["category"] as? String)
     val fabric = (map["fabric"] as? String).orEmpty().ifBlank { "Standard" }
     val size = (map["size"] as? String).orEmpty().ifBlank { "Standard" }
     val description = (map["description"] as? String).orEmpty()
@@ -223,7 +218,7 @@ class FirestoreOrderDataSource(
         }
         ?.takeIf { it.isNotEmpty() }
         ?: listOf(
-          ProductSpec("Category", category.label),
+          ProductSpec("Category", category),
           ProductSpec("Size / Cutting", size),
           ProductSpec("Fabric", fabric),
         )
@@ -280,7 +275,7 @@ class FirestoreOrderDataSource(
           "id" to id,
           "name" to name,
           "pricePkr" to pricePkr,
-          "category" to category.name,
+          "category" to ProductCategory.wireValue(category),
           "fabric" to fabric,
           "size" to size,
           "shortSpec" to shortSpec,

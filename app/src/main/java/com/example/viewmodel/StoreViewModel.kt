@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
+import com.example.data.AdminAuthDataSource
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
 import com.example.data.CatalogSyncStatus
@@ -12,12 +13,14 @@ import com.example.data.CloudOrderDataSource
 import com.example.data.CloudOrdersSnapshot
 import com.example.data.CloudProductDataSource
 import com.example.data.CloudProductsSnapshot
+import com.example.data.FirebaseAdminAuthDataSource
 import com.example.data.FirestoreAppUpdateDataSource
 import com.example.data.FirestoreOrderDataSource
 import com.example.data.FirestoreProductDataSource
 import com.example.data.OrderRepository
 import com.example.data.ProductCatalog
 import com.example.data.ProductRepository
+import com.example.data.friendlyAdminAuthError
 import com.example.data.shouldPromptForUpdate
 import com.example.model.CartItem
 import com.example.model.CheckoutFormState
@@ -45,7 +48,8 @@ data class StoreUiState(
   val allProducts: List<Product> = ProductCatalog.products,
   val filteredProducts: List<Product> = ProductCatalog.products,
   val searchQuery: String = "",
-  val selectedCategory: ProductCategory = ProductCategory.ALL,
+  /** Display label of the selected category filter; "All" shows everything. */
+  val selectedCategory: String = ProductCategory.ALL.label,
   val sortOption: SortOption = SortOption.FEATURED,
   val cartItems: List<CartItem> = emptyList(),
   val checkoutForm: CheckoutFormState = CheckoutFormState(),
@@ -57,6 +61,9 @@ data class StoreUiState(
   val isAdminUnlocked: Boolean = false,
   val adminNotice: String? = null,
   val availableUpdate: AppUpdateInfo? = null,
+  /** Firebase Auth state for the admin panel (separate from the local admin password). */
+  val isAdminSignedIn: Boolean = false,
+  val adminAuthError: String? = null,
 ) {
   val cartItemCount: Int
     get() = cartItems.sumOf { it.quantity }
@@ -76,6 +83,7 @@ class StoreViewModel(
   private val orderRepository: OrderRepository =
     OrderRepository(cloudDataSource = NoOpCloudOrderDataSource),
   private val appUpdateDataSource: AppUpdateDataSource = NoOpAppUpdateDataSource,
+  private val adminAuth: AdminAuthDataSource = NoOpAdminAuthDataSource,
   private val currentVersionCode: Int = BuildConfig.VERSION_CODE,
 ) : ViewModel() {
 
@@ -88,6 +96,7 @@ class StoreViewModel(
         syncStatus = repository.syncStatus.value,
         isAdminPasswordSet = passwordManager.isPasswordSet(),
         isAdminUnlocked = false,
+        isAdminSignedIn = adminAuth.isSignedIn,
       )
     )
   val uiState: StateFlow<StoreUiState> = _uiState.asStateFlow()
@@ -141,6 +150,17 @@ class StoreViewModel(
         _uiState.update { it.copy(availableUpdate = prompt) }
       }
     }
+
+    viewModelScope.launch {
+      adminAuth.authState.collect { signedIn ->
+        _uiState.update {
+          it.copy(
+            isAdminSignedIn = signedIn,
+            adminAuthError = if (signedIn) null else it.adminAuthError,
+          )
+        }
+      }
+    }
   }
 
   fun dismissUpdateDialog() {
@@ -162,7 +182,7 @@ class StoreViewModel(
     }
   }
 
-  fun selectCategory(category: ProductCategory) {
+  fun selectCategory(category: String) {
     _uiState.update { state ->
       state.copy(
         selectedCategory = category,
@@ -196,7 +216,7 @@ class StoreViewModel(
     _uiState.update { state ->
       state.copy(
         searchQuery = "",
-        selectedCategory = ProductCategory.ALL,
+        selectedCategory = ProductCategory.ALL.label,
         sortOption = SortOption.FEATURED,
         filteredProducts = state.allProducts,
       )
@@ -396,11 +416,54 @@ class StoreViewModel(
     _uiState.update { it.copy(adminNotice = null) }
   }
 
+  /** Firebase sign-in for the admin panel (email is fixed to the admin account). */
+  fun signInAdmin(password: String) {
+    viewModelScope.launch {
+      val result = adminAuth.signIn(password)
+      _uiState.update {
+        it.copy(
+          isAdminSignedIn = adminAuth.isSignedIn,
+          adminAuthError =
+            if (result.isSuccess) null else friendlyAdminAuthError(result.exceptionOrNull()!!),
+        )
+      }
+    }
+  }
+
+  fun signOutAdmin() {
+    adminAuth.signOut()
+    _uiState.update { it.copy(isAdminSignedIn = false, adminAuthError = null) }
+  }
+
+  fun clearAdminAuthError() {
+    _uiState.update { it.copy(adminAuthError = null) }
+  }
+
+  /**
+   * Cloud product writes need the admin to be signed in: the Firestore rules
+   * only allow product writes for the signed-in admin email. Without this
+   * check the write would fail with PERMISSION_DENIED after the product had
+   * already been added locally. Local-only catalogues (no cloud configured)
+   * are unaffected.
+   */
+  private fun requireAdminSignedInForCloudWrite(action: String): Boolean {
+    if (repository.isCloudConfigured && !adminAuth.isSignedIn) {
+      _uiState.update {
+        it.copy(
+          adminNotice =
+            "Sign in with your GharBazar account in the admin panel to $action."
+        )
+      }
+      return false
+    }
+    return true
+  }
+
   fun saveAdminProduct(
     editingProductId: String?,
     name: String,
     pricePkr: Int,
-    category: ProductCategory,
+    category: String,
     fabric: String,
     size: String,
     description: String,
@@ -409,8 +472,10 @@ class StoreViewModel(
     inStock: Boolean,
     stockQuantity: Int,
   ) {
+    if (!requireAdminSignedInForCloudWrite("save products to the cloud")) return
     val normalizedCategory =
-      if (category == ProductCategory.ALL) ProductCategory.BLANKETS else category
+      ProductCategory.fromStored(category).takeIf { it != ProductCategory.ALL.label }
+        ?: ProductCategory.BLANKETS.label
     val cleanName = name.trim()
     val cleanFabric = fabric.trim()
     val cleanSize = size.trim()
@@ -420,7 +485,7 @@ class StoreViewModel(
 
     val specs =
       buildList {
-        add(ProductSpec("Category", normalizedCategory.label))
+        add(ProductSpec("Category", normalizedCategory))
         if (cleanSize.isNotEmpty()) add(ProductSpec("Size / Cutting", cleanSize))
         if (cleanFabric.isNotEmpty()) add(ProductSpec("Fabric", cleanFabric))
       }
@@ -429,7 +494,7 @@ class StoreViewModel(
       listOf(cleanSize, cleanFabric)
         .filter { it.isNotBlank() }
         .joinToString(" • ")
-        .ifBlank { normalizedCategory.label }
+        .ifBlank { normalizedCategory }
 
     val product =
       Product(
@@ -470,6 +535,7 @@ class StoreViewModel(
   }
 
   fun deleteAdminProduct(productId: String) {
+    if (!requireAdminSignedInForCloudWrite("delete products from the cloud")) return
     viewModelScope.launch {
       val result = repository.deleteProduct(productId)
       _uiState.update {
@@ -486,6 +552,7 @@ class StoreViewModel(
   }
 
   fun updateAdminOrderStatus(orderNumber: String, newStatus: OrderStatus) {
+    if (!requireAdminSignedInForCloudWrite("change order status in the cloud")) return
     viewModelScope.launch {
       val result = orderRepository.updateOrderStatus(orderNumber, newStatus)
       _uiState.update {
@@ -513,14 +580,14 @@ class StoreViewModel(
   private fun applyFiltersAndSort(
     products: List<Product>,
     query: String,
-    category: ProductCategory,
+    category: String,
     sortOption: SortOption,
   ): List<Product> {
     val normalizedQuery = query.trim()
     val filtered =
       products.filter { product ->
         val matchesCategory =
-          category == ProductCategory.ALL || product.category == category
+          category == ProductCategory.ALL.label || product.category == category
         val matchesQuery =
           normalizedQuery.isEmpty() ||
             product.name.contains(normalizedQuery, ignoreCase = true)
@@ -552,11 +619,13 @@ class StoreViewModel(
               storage = EncryptedPasswordStorage(appContext)
             )
           val appUpdateDataSource = FirestoreAppUpdateDataSource(appContext)
+          val adminAuth = FirebaseAdminAuthDataSource(appContext)
           return StoreViewModel(
             repository = repository,
             passwordManager = passwordManager,
             orderRepository = orderRepository,
             appUpdateDataSource = appUpdateDataSource,
+            adminAuth = adminAuth,
             currentVersionCode = BuildConfig.VERSION_CODE,
           ) as T
         }
@@ -582,6 +651,15 @@ private object NoOpCloudOrderDataSource : CloudOrderDataSource {
 
 private object NoOpAppUpdateDataSource : AppUpdateDataSource {
   override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo? = null
+}
+
+private object NoOpAdminAuthDataSource : AdminAuthDataSource {
+  override val adminEmail: String = ""
+  override val isSignedIn: Boolean = false
+  override val authState: Flow<Boolean> = emptyFlow()
+  override suspend fun signIn(password: String): Result<Unit> =
+    Result.failure(IllegalStateException("Firebase Auth is not configured"))
+  override fun signOut() = Unit
 }
 
 private class InMemoryPasswordStorage : PasswordStorage {

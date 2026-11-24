@@ -111,9 +111,12 @@ dependencies {
   // implementation(libs.firebase.ai)
   implementation(libs.firebase.firestore)
 
-  // Uncomment ALL FOUR of the following dependencies together to use Firebase Auth and Google
-  // Sign-In via Credential Manager:
-  // implementation(libs.firebase.auth)
+  // Firebase Auth (email/password) is used for the admin sign-in inside the
+  // app's admin panel — it proves to Firestore that the user is the admin,
+  // which the security rules require for product writes. The other three
+  // dependencies below are only needed for Google Sign-In via Credential
+  // Manager, which the app does not use:
+  implementation(libs.firebase.auth)
   // implementation(libs.androidx.credentials)
   // implementation(libs.androidx.credentials.play.services)
   // implementation(libs.googleid)

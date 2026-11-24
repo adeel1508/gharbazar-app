@@ -148,12 +148,7 @@ class FirestoreProductDataSource(
   private fun DocumentSnapshot.toProductOrNull(): Product? {
     val name = getString("name")?.takeIf { it.isNotBlank() } ?: return null
     val pricePkr = (get("pricePkr") as? Number)?.toInt() ?: return null
-    val categoryName = getString("category") ?: ProductCategory.BLANKETS.name
-    val category =
-      ProductCategory.entries.firstOrNull {
-        it.name.equals(categoryName, ignoreCase = true) ||
-          it.label.equals(categoryName, ignoreCase = true)
-      } ?: ProductCategory.BLANKETS
+    val category = ProductCategory.fromStored(getString("category"))
 
     val fabric = getString("fabric").orEmpty().ifBlank { "Standard" }
     val size = getString("size").orEmpty().ifBlank { "Standard" }
@@ -202,7 +197,7 @@ class FirestoreProductDataSource(
       mutableMapOf<String, Any>(
         "name" to name,
         "pricePkr" to pricePkr,
-        "category" to category.name,
+        "category" to ProductCategory.wireValue(category),
         "fabric" to fabric,
         "size" to size,
         "shortSpec" to shortSpec,
@@ -219,12 +214,12 @@ class FirestoreProductDataSource(
   }
 
   private fun buildDefaultSpecs(
-    category: ProductCategory,
+    category: String,
     fabric: String,
     size: String,
   ): List<ProductSpec> {
     return listOf(
-      ProductSpec("Category", category.label),
+      ProductSpec("Category", category),
       ProductSpec("Size / Cutting", size),
       ProductSpec("Fabric", fabric),
     )

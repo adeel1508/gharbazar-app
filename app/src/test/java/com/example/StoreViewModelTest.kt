@@ -84,13 +84,13 @@ class StoreViewModelTest {
   fun searchCategoryAndSort_filterAndSortAccurately() {
     val vm = StoreViewModel()
 
-    vm.selectCategory(ProductCategory.BLANKETS)
+    vm.selectCategory(ProductCategory.BLANKETS.label)
     assertEquals(4, vm.uiState.value.filteredProducts.size)
-    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.BLANKETS })
+    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.BLANKETS.label })
 
-    vm.selectCategory(ProductCategory.MENS_SUITS)
+    vm.selectCategory(ProductCategory.MENS_SUITS.label)
     assertEquals(4, vm.uiState.value.filteredProducts.size)
-    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.MENS_SUITS })
+    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.MENS_SUITS.label })
 
     vm.updateSortOption(SortOption.PRICE_HIGH_LOW)
     assertEquals(3099, vm.uiState.value.filteredProducts.first().pricePkr)
@@ -99,7 +99,7 @@ class StoreViewModelTest {
     vm.updateSortOption(SortOption.PRICE_LOW_HIGH)
     assertEquals(1999, vm.uiState.value.filteredProducts.first().pricePkr)
 
-    vm.selectCategory(ProductCategory.ALL)
+    vm.selectCategory(ProductCategory.ALL.label)
     vm.updateSearchQuery("Boski")
     assertEquals(1, vm.uiState.value.filteredProducts.size)
     assertEquals("Men's Unstitched Boski Plain Suit", vm.uiState.value.filteredProducts.first().name)
@@ -214,7 +214,7 @@ class StoreViewModelTest {
       editingProductId = null,
       name = "Men's Unstitched Karandi Suit",
       pricePkr = 2750,
-      category = ProductCategory.MENS_SUITS,
+      category = ProductCategory.MENS_SUITS.label,
       fabric = "Karandi",
       size = "4.5 meter cutting",
       description = "Warm textured winter Karandi suit.",
@@ -235,7 +235,7 @@ class StoreViewModelTest {
       editingProductId = added.id,
       name = "Men's Unstitched Karandi Suit",
       pricePkr = 2499,
-      category = ProductCategory.MENS_SUITS,
+      category = ProductCategory.MENS_SUITS.label,
       fabric = "Karandi",
       size = "4.5 meter cutting",
       description = "Updated price winter Karandi suit.",
@@ -252,7 +252,7 @@ class StoreViewModelTest {
       editingProductId = added.id,
       name = "Men's Unstitched Karandi Suit",
       pricePkr = 2499,
-      category = ProductCategory.MENS_SUITS,
+      category = ProductCategory.MENS_SUITS.label,
       fabric = "Karandi",
       size = "4.5 meter cutting",
       description = "Sold out",
