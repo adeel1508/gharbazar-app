@@ -7,6 +7,7 @@ import com.example.data.GHARBAZAR_ADMIN_EMAIL
 import com.example.data.ProductCatalog
 import com.example.data.ProductRepository
 import com.example.data.friendlyAdminAuthError
+import com.example.model.OrderStatus
 import com.example.model.ProductCategory
 import com.example.model.categoryFiltersFor
 import com.example.viewmodel.StoreViewModel
@@ -143,6 +144,53 @@ class CategoryAndAdminAuthTest {
 
     vm.deleteAdminProduct(ProductCatalog.products[0].id)
     assertEquals(8, vm.uiState.value.allProducts.size)
+  }
+
+  @Test
+  fun adminPanelGate_staysLockedWithoutCloudSignIn() {
+    // The AdminRouteScreen gate is (isCloudConfigured && !isAdminSignedIn):
+    // with a configured cloud the panel must stay locked until the cloud
+    // sign-in succeeds, and every cloud write stays blocked meanwhile.
+    val failingAuth =
+      FakeAdminAuth(signInResult = Result.failure(RuntimeException("bad password")))
+    val vm =
+      StoreViewModel(
+        repository = ProductRepository(FakeConfiguredCloudProducts()),
+        adminAuth = failingAuth,
+      )
+    assertTrue(vm.uiState.value.isCloudConfigured)
+    assertFalse(vm.uiState.value.isAdminSignedIn)
+
+    vm.signInAdmin("wrong-password")
+    assertFalse(vm.uiState.value.isAdminSignedIn)
+    assertNotNull(vm.uiState.value.adminAuthError)
+
+    vm.saveAdminProduct(
+      editingProductId = null,
+      name = "Should Not Save",
+      pricePkr = 1000,
+      category = "Blankets",
+      fabric = "Cotton",
+      size = "Size",
+      description = "Desc",
+      imageKey = "blanket_plain_blue",
+      imageUri = null,
+      inStock = true,
+      stockQuantity = 5,
+    )
+    vm.deleteAdminProduct(ProductCatalog.products[0].id)
+    vm.updateAdminOrderStatus("GB-000000", OrderStatus.CONFIRMED)
+    assertEquals(8, vm.uiState.value.allProducts.size)
+    assertTrue(vm.uiState.value.adminNotice?.contains("Sign in") == true)
+  }
+
+  @Test
+  fun adminPanelGate_skippedWhenCloudNotConfigured() {
+    // Without a cloud catalogue the local admin password is the only lock,
+    // as before — the cloud sign-in gate does not apply.
+    val vm = StoreViewModel()
+    assertFalse(vm.uiState.value.isCloudConfigured)
+    assertFalse(vm.uiState.value.isAdminSignedIn)
   }
 
   @Test

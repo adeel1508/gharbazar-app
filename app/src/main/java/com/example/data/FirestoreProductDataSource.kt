@@ -146,50 +146,23 @@ class FirestoreProductDataSource(
   }
 
   private fun DocumentSnapshot.toProductOrNull(): Product? {
-    val name = getString("name")?.takeIf { it.isNotBlank() } ?: return null
-    val pricePkr = (get("pricePkr") as? Number)?.toInt() ?: return null
-    val category = ProductCategory.fromStored(getString("category"))
-
-    val fabric = getString("fabric").orEmpty().ifBlank { "Standard" }
-    val size = getString("size").orEmpty().ifBlank { "Standard" }
-    val description = getString("description").orEmpty()
-    val imageKey = getString("imageKey").orEmpty()
-    val imageUri = getString("imageUri")?.takeIf { it.isNotBlank() }
-    val inStock = getBoolean("inStock") ?: true
-    val stockQuantity = (get("stockQuantity") as? Number)?.toInt() ?: if (inStock) 10 else 0
-
-    val rawSpecs = get("specs") as? List<*>
-    val parsedSpecs =
-      rawSpecs
-        ?.mapNotNull { entry ->
-          val map = entry as? Map<*, *> ?: return@mapNotNull null
-          val label = map["label"] as? String ?: return@mapNotNull null
-          val value = map["value"] as? String ?: return@mapNotNull null
-          ProductSpec(label, value)
-        }
-        ?.takeIf { it.isNotEmpty() }
-        ?: buildDefaultSpecs(category, fabric, size)
-
-    val shortSpec =
-      getString("shortSpec")?.takeIf { it.isNotBlank() }
-        ?: listOf(size, fabric).filter { it.isNotBlank() }.joinToString(" • ")
-
-    return Product(
-      id = id,
-      name = name,
-      pricePkr = pricePkr,
-      category = category,
-      fabric = fabric,
-      size = size,
-      shortSpec = shortSpec,
-      specs = parsedSpecs,
-      description = description,
-      imageKey = imageKey,
-      imageRes = ProductCatalog.resolveDrawableForKey(imageKey, category),
-      imageUri = imageUri,
-      inStock = inStock,
-      stockQuantity = stockQuantity,
-    )
+    val fields =
+      mapOf<String, Any?>(
+        "name" to getString("name"),
+        "pricePkr" to get("pricePkr"),
+        "category" to getString("category"),
+        "fabric" to getString("fabric"),
+        "size" to getString("size"),
+        "description" to getString("description"),
+        "imageKey" to getString("imageKey"),
+        "imageUri" to getString("imageUri"),
+        "imageUris" to get("imageUris"),
+        "inStock" to getBoolean("inStock"),
+        "stockQuantity" to get("stockQuantity"),
+        "specs" to get("specs"),
+        "shortSpec" to getString("shortSpec"),
+      )
+    return productFromFirestoreFields(id, fields)
   }
 
   private fun Product.toFirestoreMap(): Map<String, Any> {
@@ -210,23 +183,98 @@ class FirestoreProductDataSource(
     if (!imageUri.isNullOrBlank()) {
       map["imageUri"] = imageUri
     }
+    if (imageUris.isNotEmpty()) {
+      map["imageUris"] = imageUris
+    }
     return map
-  }
-
-  private fun buildDefaultSpecs(
-    category: String,
-    fabric: String,
-    size: String,
-  ): List<ProductSpec> {
-    return listOf(
-      ProductSpec("Category", category),
-      ProductSpec("Size / Cutting", size),
-      ProductSpec("Fabric", fabric),
-    )
   }
 
   companion object {
     const val PRODUCTS_COLLECTION = "products"
     private const val TAG = "FirestoreProductSource"
   }
+}
+
+/**
+ * Pure mapping from a Firestore product document's fields to a [Product].
+ * Kept separate from [DocumentSnapshot] so the gallery rules are unit
+ * testable without Firebase: `imageUris` (array of URL strings) wins when
+ * present; otherwise a lone `imageUri` becomes the single-photo gallery;
+ * with neither, the gallery is empty and the built-in drawable is used.
+ * The cover photo ([Product.imageUri]) is always the first gallery entry.
+ */
+internal fun productFromFirestoreFields(id: String, fields: Map<String, Any?>): Product? {
+  val name = (fields["name"] as? String)?.takeIf { it.isNotBlank() } ?: return null
+  val pricePkr = (fields["pricePkr"] as? Number)?.toInt() ?: return null
+  val category = ProductCategory.fromStored(fields["category"] as? String)
+
+  val fabric = (fields["fabric"] as? String).orEmpty().ifBlank { "Standard" }
+  val size = (fields["size"] as? String).orEmpty().ifBlank { "Standard" }
+  val description = (fields["description"] as? String).orEmpty()
+  val imageKey = (fields["imageKey"] as? String).orEmpty()
+  val coverUri = (fields["imageUri"] as? String)?.takeIf { it.isNotBlank() }
+  val storedUris =
+    (fields["imageUris"] as? List<*>)
+      ?.filterIsInstance<String>()
+      ?.map { it.trim() }
+      ?.filter { it.isNotEmpty() }
+      .orEmpty()
+  val imageUris =
+    when {
+      storedUris.isNotEmpty() ->
+        if (coverUri != null && coverUri !in storedUris) listOf(coverUri) + storedUris
+        else storedUris
+      coverUri != null -> listOf(coverUri)
+      else -> emptyList()
+    }
+  val imageUri = imageUris.firstOrNull()
+  val inStock = (fields["inStock"] as? Boolean) ?: true
+  val stockQuantity =
+    (fields["stockQuantity"] as? Number)?.toInt() ?: if (inStock) 10 else 0
+
+  val rawSpecs = fields["specs"] as? List<*>
+  val parsedSpecs =
+    rawSpecs
+      ?.mapNotNull { entry ->
+        val map = entry as? Map<*, *> ?: return@mapNotNull null
+        val label = map["label"] as? String ?: return@mapNotNull null
+        val value = map["value"] as? String ?: return@mapNotNull null
+        ProductSpec(label, value)
+      }
+      ?.takeIf { it.isNotEmpty() }
+      ?: buildDefaultSpecs(category, fabric, size)
+
+  val shortSpec =
+    (fields["shortSpec"] as? String)?.takeIf { it.isNotBlank() }
+      ?: listOf(size, fabric).filter { it.isNotBlank() }.joinToString(" • ")
+
+  return Product(
+    id = id,
+    name = name,
+    pricePkr = pricePkr,
+    category = category,
+    fabric = fabric,
+    size = size,
+    shortSpec = shortSpec,
+    specs = parsedSpecs,
+    description = description,
+    imageKey = imageKey,
+    imageRes = ProductCatalog.resolveDrawableForKey(imageKey, category),
+    imageUri = imageUri,
+    imageUris = imageUris,
+    inStock = inStock,
+    stockQuantity = stockQuantity,
+  )
+}
+
+private fun buildDefaultSpecs(
+  category: String,
+  fabric: String,
+  size: String,
+): List<ProductSpec> {
+  return listOf(
+    ProductSpec("Category", category),
+    ProductSpec("Size / Cutting", size),
+    ProductSpec("Fabric", fabric),
+  )
 }

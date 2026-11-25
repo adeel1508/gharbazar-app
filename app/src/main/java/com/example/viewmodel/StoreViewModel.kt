@@ -64,6 +64,12 @@ data class StoreUiState(
   /** Firebase Auth state for the admin panel (separate from the local admin password). */
   val isAdminSignedIn: Boolean = false,
   val adminAuthError: String? = null,
+  /**
+   * True when a cloud Firestore catalogue is configured. The admin panel
+   * gate (cloud sign-in first) only applies then; without a cloud the
+   * local admin password is the only lock, as before.
+   */
+  val isCloudConfigured: Boolean = false,
 ) {
   val cartItemCount: Int
     get() = cartItems.sumOf { it.quantity }
@@ -97,6 +103,7 @@ class StoreViewModel(
         isAdminPasswordSet = passwordManager.isPasswordSet(),
         isAdminUnlocked = false,
         isAdminSignedIn = adminAuth.isSignedIn,
+        isCloudConfigured = repository.isCloudConfigured,
       )
     )
   val uiState: StateFlow<StoreUiState> = _uiState.asStateFlow()
@@ -471,6 +478,7 @@ class StoreViewModel(
     imageUri: String?,
     inStock: Boolean,
     stockQuantity: Int,
+    imageUris: List<String> = emptyList(),
   ) {
     if (!requireAdminSignedInForCloudWrite("save products to the cloud")) return
     val normalizedCategory =
@@ -482,6 +490,14 @@ class StoreViewModel(
     val cleanDescription = description.trim()
     val cleanQty = if (inStock) stockQuantity.coerceAtLeast(1) else 0
     val resolvedRes = ProductCatalog.resolveDrawableForKey(imageKey, normalizedCategory)
+    // The gallery is the cleaned URL list; the cover is the first gallery
+    // photo (or the single imageUri when no list was given).
+    val cleanImageUris =
+      imageUris.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    val coverUri = imageUri?.takeIf { it.isNotBlank() } ?: cleanImageUris.firstOrNull()
+    val galleryUris =
+      if (coverUri != null && coverUri !in cleanImageUris) listOf(coverUri) + cleanImageUris
+      else cleanImageUris
 
     val specs =
       buildList {
@@ -509,7 +525,8 @@ class StoreViewModel(
         description = cleanDescription,
         imageKey = imageKey,
         imageRes = resolvedRes,
-        imageUri = imageUri?.takeIf { it.isNotBlank() },
+        imageUri = coverUri,
+        imageUris = galleryUris,
         inStock = inStock,
         stockQuantity = cleanQty,
       )

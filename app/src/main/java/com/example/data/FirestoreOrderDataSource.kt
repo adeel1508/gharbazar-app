@@ -7,7 +7,6 @@ import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
 import com.example.model.Product
 import com.example.model.ProductCategory
-import com.example.model.ProductSpec
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
@@ -191,54 +190,17 @@ class FirestoreOrderDataSource(
     )
   }
 
+  /**
+   * Parses an order item's embedded product snapshot with the same rules as
+   * the catalogue ([productFromFirestoreFields]), so a gallery saved with
+   * the product survives inside orders too.
+   */
+  @Suppress("UNCHECKED_CAST")
   private fun parseProductFromMap(map: Map<*, *>): Product? {
-    val name = (map["name"] as? String)?.takeIf { it.isNotBlank() } ?: return null
-    val pricePkr = (map["pricePkr"] as? Number)?.toInt() ?: return null
-    val id = (map["id"] as? String)?.takeIf { it.isNotBlank() } ?: name
-    val category = ProductCategory.fromStored(map["category"] as? String)
-    val fabric = (map["fabric"] as? String).orEmpty().ifBlank { "Standard" }
-    val size = (map["size"] as? String).orEmpty().ifBlank { "Standard" }
-    val description = (map["description"] as? String).orEmpty()
-    val imageKey = (map["imageKey"] as? String).orEmpty()
-    val imageUri = (map["imageUri"] as? String)?.takeIf { it.isNotBlank() }
-    val inStock = map["inStock"] as? Boolean ?: true
-    val stockQuantity = (map["stockQuantity"] as? Number)?.toInt() ?: if (inStock) 10 else 0
-    val shortSpec =
-      (map["shortSpec"] as? String)?.takeIf { it.isNotBlank() }
-        ?: listOf(size, fabric).filter { it.isNotBlank() }.joinToString(" • ")
-
-    val rawSpecs = map["specs"] as? List<*>
-    val parsedSpecs =
-      rawSpecs
-        ?.mapNotNull { entry ->
-          val specMap = entry as? Map<*, *> ?: return@mapNotNull null
-          val label = specMap["label"] as? String ?: return@mapNotNull null
-          val value = specMap["value"] as? String ?: return@mapNotNull null
-          ProductSpec(label, value)
-        }
-        ?.takeIf { it.isNotEmpty() }
-        ?: listOf(
-          ProductSpec("Category", category),
-          ProductSpec("Size / Cutting", size),
-          ProductSpec("Fabric", fabric),
-        )
-
-    return Product(
-      id = id,
-      name = name,
-      pricePkr = pricePkr,
-      category = category,
-      fabric = fabric,
-      size = size,
-      shortSpec = shortSpec,
-      specs = parsedSpecs,
-      description = description,
-      imageKey = imageKey,
-      imageRes = ProductCatalog.resolveDrawableForKey(imageKey, category),
-      imageUri = imageUri,
-      inStock = inStock,
-      stockQuantity = stockQuantity,
-    )
+    val id =
+      (map["id"] as? String)?.takeIf { it.isNotBlank() }
+        ?: (map["name"] as? String)?.takeIf { it.isNotBlank() } ?: return null
+    return productFromFirestoreFields(id, map as Map<String, Any?>)
   }
 
   companion object {
@@ -288,6 +250,9 @@ class FirestoreOrderDataSource(
         )
       if (!imageUri.isNullOrBlank()) {
         map["imageUri"] = imageUri
+      }
+      if (imageUris.isNotEmpty()) {
+        map["imageUris"] = imageUris
       }
       return map
     }

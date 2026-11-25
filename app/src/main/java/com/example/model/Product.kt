@@ -85,9 +85,26 @@ data class Product(
   val imageUri: String? = null,
   val inStock: Boolean = true,
   val stockQuantity: Int = 20,
+  /**
+   * Ordered photo URLs for the product detail gallery. The first entry is
+   * the cover photo shown on the home screen (same value as [imageUri]
+   * when the gallery is non-empty). Empty for products that only have a
+   * built-in drawable photo — then [galleryPhotos] yields a single null
+   * entry and the drawable is shown instead.
+   */
+  val imageUris: List<String> = emptyList(),
 ) {
   val isAvailable: Boolean
     get() = inStock && stockQuantity > 0
+
+  /**
+   * Ordered photos for the product detail gallery. Each entry is a
+   * remote/local URI string, or null when the product has no photo URL at
+   * all — then the built-in drawable ([imageRes]) is shown instead.
+   */
+  fun galleryPhotos(): List<String?> {
+    return if (imageUris.isNotEmpty()) imageUris else listOf(imageUri)
+  }
 }
 
 /**

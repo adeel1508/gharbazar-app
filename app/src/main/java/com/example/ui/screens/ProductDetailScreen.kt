@@ -1,7 +1,11 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -50,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +70,7 @@ import com.example.model.formatPkr
 import com.example.ui.components.CachedProductImage
 import com.example.ui.components.CodTrustBadge
 import com.example.ui.components.QuantityStepper
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -276,20 +282,103 @@ fun ProductDetailScreen(
 
 @Composable
 private fun ProductHeroPhoto(product: Product, modifier: Modifier = Modifier) {
-  Surface(
-    modifier = modifier.aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
-    shape = MaterialTheme.shapes.large,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    shadowElevation = 2.dp,
-  ) {
-    CachedProductImage(
-      imageRes = product.imageRes,
-      imageUri = product.imageUri,
-      contentDescription = product.name,
-      cacheKey = product.id,
-      modifier = Modifier.fillMaxSize(),
-      contentScale = ContentScale.Crop,
-    )
+  val photos = remember(product) { product.galleryPhotos() }
+  if (photos.size <= 1) {
+    Surface(
+      modifier = modifier.aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
+      shape = MaterialTheme.shapes.large,
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+      shadowElevation = 2.dp,
+    ) {
+      CachedProductImage(
+        imageRes = product.imageRes,
+        imageUri = product.imageUri,
+        contentDescription = product.name,
+        cacheKey = product.id,
+        modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Crop,
+      )
+    }
+    return
+  }
+
+  // Swipeable gallery: one photo per page, dots + tappable thumbnails.
+  // The home screen still shows only the cover (first) photo.
+  val pagerState = rememberPagerState(pageCount = { photos.size })
+  val coroutineScope = rememberCoroutineScope()
+  Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Surface(
+      modifier =
+        Modifier.fillMaxWidth().aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
+      shape = MaterialTheme.shapes.large,
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+      shadowElevation = 2.dp,
+    ) {
+      HorizontalPager(
+        state = pagerState,
+        modifier = Modifier.fillMaxSize().testTag("detail_gallery_pager"),
+      ) { page ->
+        CachedProductImage(
+          imageRes = product.imageRes,
+          imageUri = photos[page],
+          contentDescription = "${product.name} photo ${page + 1} of ${photos.size}",
+          cacheKey = "${product.id}:photo:$page",
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop,
+        )
+      }
+    }
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.Center,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      photos.indices.forEach { index ->
+        val selected = pagerState.currentPage == index
+        Box(
+          modifier =
+            Modifier.padding(horizontal = 3.dp)
+              .size(if (selected) 10.dp else 8.dp)
+              .clip(CircleShape)
+              .background(
+                if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.outlineVariant
+              )
+              .testTag("detail_gallery_dot_$index"),
+        )
+      }
+    }
+    Row(
+      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      photos.forEachIndexed { index, uri ->
+        val selected = pagerState.currentPage == index
+        Box(
+          modifier =
+            Modifier.size(64.dp)
+              .clip(MaterialTheme.shapes.small)
+              .border(
+                width = if (selected) 2.dp else 1.dp,
+                color =
+                  if (selected) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.outlineVariant,
+                shape = MaterialTheme.shapes.small,
+              )
+              .clickable { coroutineScope.launch { pagerState.scrollToPage(index) } }
+              .testTag("detail_gallery_thumb_$index"),
+        ) {
+          CachedProductImage(
+            imageRes = product.imageRes,
+            imageUri = uri,
+            contentDescription = "${product.name} thumbnail ${index + 1}",
+            cacheKey = "${product.id}:thumb:$index",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+          )
+        }
+      }
+    }
   }
 }
 

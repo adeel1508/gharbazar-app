@@ -118,6 +118,14 @@ private enum class AdminDashboardTab(val label: String) {
   ORDERS("Orders"),
 }
 
+/**
+ * Parses the admin editor's "Photo URLs (one per line)" field: one URL per
+ * line, blank lines ignored, duplicates removed, order kept — the first
+ * line is the cover photo.
+ */
+internal fun parseImageUrls(text: String): List<String> =
+  text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
+
 @Composable
 fun AdminRouteScreen(
   uiState: StoreUiState,
@@ -135,6 +143,7 @@ fun AdminRouteScreen(
     description: String,
     imageKey: String,
     imageUri: String?,
+    imageUris: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
   ) -> Unit,
@@ -146,7 +155,18 @@ fun AdminRouteScreen(
 ) {
   BackHandler(onBack = onBackToStore)
 
-  if (!uiState.isAdminPasswordSet) {
+  // Security gate (v1.0.8): when a cloud catalogue is configured, the
+  // Firebase admin sign-in comes FIRST — before any local password setup
+  // or unlock. Otherwise anyone who installs the app could set their own
+  // local password and walk into the admin panel. The local password stays
+  // as a second, device-level lock after the cloud sign-in.
+  if (uiState.isCloudConfigured && !uiState.isAdminSignedIn) {
+    AdminCloudSignInScreen(
+      onBack = onBackToStore,
+      authError = uiState.adminAuthError,
+      onSignIn = onAdminSignIn,
+    )
+  } else if (!uiState.isAdminPasswordSet) {
     AdminPasswordSetupScreen(
       onBack = onBackToStore,
       onSetupPassword = onSetupPassword,
@@ -168,6 +188,129 @@ fun AdminRouteScreen(
       onAdminSignIn = onAdminSignIn,
       onAdminSignOut = onAdminSignOut,
     )
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdminCloudSignInScreen(
+  onBack: () -> Unit,
+  authError: String?,
+  onSignIn: (String) -> Unit,
+) {
+  var password by remember { mutableStateOf("") }
+  var showPassword by remember { mutableStateOf(false) }
+
+  Scaffold(
+    containerColor = MaterialTheme.colorScheme.background,
+    topBar = {
+      TopAppBar(
+        title = { Text("Seller / Admin") },
+        navigationIcon = {
+          IconButton(onClick = onBack, modifier = Modifier.minimumInteractiveComponentSize()) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+          }
+        },
+        colors =
+          TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.background
+          ),
+      )
+    },
+  ) { innerPadding ->
+    Box(
+      modifier = Modifier.fillMaxSize().padding(innerPadding).padding(20.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Card(
+        modifier =
+          Modifier.widthIn(max = 480.dp).fillMaxWidth().testTag("admin_cloud_signin_screen"),
+        colors =
+          CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
+          ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = MaterialTheme.shapes.large,
+      ) {
+        Column(
+          modifier = Modifier.padding(24.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Box(
+            modifier =
+              Modifier.size(56.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.CloudDone,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(28.dp),
+            )
+          }
+
+          Text(
+            text = "Cloud Admin Sign In",
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center,
+          )
+
+          Text(
+            text =
+              "Only the GharBazar account can open the admin panel. Sign in with your account password first — the device admin password comes after.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+          )
+
+          Text(
+            text = "Account: $GHARBAZAR_ADMIN_EMAIL",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+          )
+
+          OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Account Password") },
+            singleLine = true,
+            isError = authError != null,
+            supportingText = authError?.let { msg -> { Text(msg) } },
+            visualTransformation =
+              if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+              IconButton(onClick = { showPassword = !showPassword }) {
+                Icon(
+                  imageVector =
+                    if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                  contentDescription = "Toggle password visibility",
+                )
+              }
+            },
+            keyboardOptions =
+              KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+              ),
+            modifier = Modifier.fillMaxWidth().testTag("admin_cloud_signin_password_input"),
+          )
+
+          Button(
+            onClick = { onSignIn(password) },
+            enabled = password.isNotBlank(),
+            modifier =
+              Modifier.fillMaxWidth()
+                .height(50.dp)
+                .testTag("admin_cloud_signin_button"),
+          ) {
+            Text("Sign in to Cloud Admin")
+          }
+        }
+      }
+    }
   }
 }
 
@@ -458,6 +601,7 @@ private fun AdminDashboardScreen(
     description: String,
     imageKey: String,
     imageUri: String?,
+    imageUris: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
   ) -> Unit,
@@ -699,7 +843,7 @@ private fun AdminDashboardScreen(
         isCreatingNew = false
         showEditorForProduct = null
       },
-      onSave = { name, price, category, fabric, size, desc, imgKey, imgUri, inStock, stockQty ->
+      onSave = { name, price, category, fabric, size, desc, imgKey, imgUri, imgUris, inStock, stockQty ->
         onSaveProduct(
           showEditorForProduct?.id,
           name,
@@ -710,6 +854,7 @@ private fun AdminDashboardScreen(
           desc,
           imgKey,
           imgUri,
+          imgUris,
           inStock,
           stockQty,
         )
@@ -1290,6 +1435,7 @@ private fun AdminProductEditorDialog(
     description: String,
     imageKey: String,
     imageUri: String?,
+    imageUris: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
   ) -> Unit,
@@ -1328,6 +1474,13 @@ private fun AdminProductEditorDialog(
     mutableStateOf(initialProduct?.imageKey ?: ProductCatalog.photoOptions.first().key)
   }
   var imageUri by remember(initialProduct) { mutableStateOf(initialProduct?.imageUri) }
+  var imageUrlsText by remember(initialProduct) {
+    mutableStateOf(
+      (initialProduct?.imageUris?.ifEmpty { listOfNotNull(initialProduct.imageUri) })
+        ?.joinToString("\n")
+        .orEmpty()
+    )
+  }
   var inStock by remember(initialProduct) { mutableStateOf(initialProduct?.inStock ?: true) }
   var stockQtyText by remember(initialProduct) {
     mutableStateOf((initialProduct?.stockQuantity ?: 20).toString())
@@ -1575,6 +1728,25 @@ private fun AdminProductEditorDialog(
           }
         }
 
+        OutlinedTextField(
+          value = imageUrlsText,
+          onValueChange = {
+            imageUrlsText = it
+            errorText = null
+          },
+          label = { Text("Photo URLs (one per line)") },
+          placeholder = { Text("https://... (first URL is the cover photo)") },
+          minLines = 2,
+          maxLines = 4,
+          modifier = Modifier.fillMaxWidth().testTag("admin_product_image_urls_input"),
+        )
+        Text(
+          text =
+            "Add up to 4 photo links, one per line — the detail screen shows them as a swipeable gallery. A built-in photo above is used only when no photo URL is set.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
         if (errorText != null) {
           Text(
             text = errorText!!,
@@ -1605,7 +1777,14 @@ private fun AdminProductEditorDialog(
             size.isBlank() -> errorText = "Size / cutting detail is required."
             description.isBlank() -> errorText = "Full description is required."
             inStock && parsedQty <= 0 -> errorText = "Enter stock quantity greater than 0."
-            else ->
+            else -> {
+              // Gallery: a photo picked from the device first, then the
+              // URLs from the text field. First entry is the cover photo.
+              val gallery =
+                buildList {
+                  imageUri?.takeIf { it.isNotBlank() }?.let { add(it) }
+                  addAll(parseImageUrls(imageUrlsText))
+                }.distinct()
               onSave(
                 name,
                 parsedPrice,
@@ -1614,10 +1793,12 @@ private fun AdminProductEditorDialog(
                 size,
                 description,
                 imageKey,
-                imageUri,
+                gallery.firstOrNull(),
+                gallery,
                 inStock,
                 parsedQty,
               )
+            }
           }
         },
         modifier = Modifier.testTag("admin_save_product_button"),
