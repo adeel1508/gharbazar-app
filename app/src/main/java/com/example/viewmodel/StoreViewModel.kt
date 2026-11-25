@@ -476,9 +476,9 @@ class StoreViewModel(
     description: String,
     imageKey: String,
     imageUri: String?,
+    imageUris: List<String> = emptyList(),
     inStock: Boolean,
     stockQuantity: Int,
-    imageUris: List<String> = emptyList(),
   ) {
     if (!requireAdminSignedInForCloudWrite("save products to the cloud")) return
     val normalizedCategory =
