@@ -318,7 +318,7 @@ class FirestoreOrderDataSource(
           "timestamp" to timestampIso,
           "status" to status.wireValue,
         )
-      order.userId?.trim()?.takeIf { it.isNotEmpty() }?.let { uid ->
+      userId?.trim()?.takeIf { it.isNotEmpty() }?.let { uid ->
         map["userId"] = uid
       }
       if (createdAtValue != null) {
