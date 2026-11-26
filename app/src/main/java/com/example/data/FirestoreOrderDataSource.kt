@@ -20,6 +20,9 @@ interface CloudOrderDataSource {
 
   suspend fun fetchOrders(): Result<List<ConfirmedOrder>>
 
+  /** Only the orders whose `userId` equals [userId], newest first. */
+  suspend fun fetchMyOrders(userId: String): Result<List<ConfirmedOrder>>
+
   suspend fun saveOrder(order: ConfirmedOrder): Result<Unit>
 
   suspend fun updateOrderStatus(documentId: String, status: OrderStatus): Result<Unit>
@@ -58,6 +61,27 @@ class FirestoreOrderDataSource(
         .sortedByDescending { it.timestampMillis }
     }.onFailure { err ->
       Log.w(TAG, "fetchOrders failed: ${err.message}")
+    }
+  }
+
+  override suspend fun fetchMyOrders(userId: String): Result<List<ConfirmedOrder>> {
+    val db =
+      firestore
+        ?: return Result.failure(IllegalStateException("Firebase Firestore is not configured."))
+    val cleanUid = userId.trim()
+    if (cleanUid.isEmpty()) {
+      return Result.failure(IllegalArgumentException("Missing customer id."))
+    }
+
+    return runCatching {
+      // Single-field equality only — no composite index needed; sort in memory.
+      val snapshot =
+        db.collection(ORDERS_COLLECTION).whereEqualTo("userId", cleanUid).get().await()
+      snapshot.documents
+        .mapNotNull { it.toConfirmedOrderSafely() }
+        .sortedByDescending { it.timestampMillis }
+    }.onFailure { err ->
+      Log.w(TAG, "fetchMyOrders failed: ${err.message}")
     }
   }
 
@@ -102,6 +126,7 @@ class FirestoreOrderDataSource(
       val city = safeString("city").orEmpty()
       val totalPkr = safeInt("totalPkr") ?: 0
       val status = OrderStatus.fromWireValue(safeString("status"))
+      val userId = safeString("userId")?.takeIf { it.isNotBlank() }
 
       val rawTimestamp = get("timestamp")
       val rawCreatedAt = get("createdAt")
@@ -146,6 +171,7 @@ class FirestoreOrderDataSource(
         timestampMillis = timestampMillis,
         status = status,
         documentId = id,
+        userId = userId,
       )
     }.onFailure { err ->
       Log.w(TAG, "Skipping malformed order document $id: ${err.message}")
@@ -267,8 +293,9 @@ class FirestoreOrderDataSource(
     }
 
     /**
-     * Builds the exact Firestore document payload for guest COD orders.
-     * Contains NO `userId` field.
+     * Builds the exact Firestore document payload for COD orders.
+     * Guest orders contain NO `userId` field; orders placed by a signed-in
+     * customer include their `userId` so the record follows their account.
      */
     fun ConfirmedOrder.toFirestoreOrderMap(
       createdAtValue: Any? = null,
@@ -291,6 +318,9 @@ class FirestoreOrderDataSource(
           "timestamp" to timestampIso,
           "status" to status.wireValue,
         )
+      order.userId?.trim()?.takeIf { it.isNotEmpty() }?.let { uid ->
+        map["userId"] = uid
+      }
       if (createdAtValue != null) {
         map["createdAt"] = createdAtValue
       }

@@ -460,6 +460,10 @@ class StoreViewModelTest {
       return Result.success(ordersToReturn)
     }
 
+    override suspend fun fetchMyOrders(userId: String): Result<List<ConfirmedOrder>> {
+      return Result.success(ordersToReturn.filter { it.userId == userId })
+    }
+
     override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> {
       return if (failNextSave) {
         Result.failure(RuntimeException("Network timeout"))

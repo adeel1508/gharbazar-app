@@ -13,6 +13,13 @@ sealed interface AdminOrdersLoadState {
   data class Error(val message: String) : AdminOrdersLoadState
 }
 
+sealed interface CustomerOrdersLoadState {
+  data object Idle : CustomerOrdersLoadState
+  data object Loading : CustomerOrdersLoadState
+  data class Loaded(val orders: List<ConfirmedOrder>) : CustomerOrdersLoadState
+  data class Error(val message: String) : CustomerOrdersLoadState
+}
+
 /**
  * Repository for COD orders.
  *
@@ -20,6 +27,8 @@ sealed interface AdminOrdersLoadState {
  * - Does NOTHING in `init`: never attaches an orders listener or refreshes orders at app startup
  *   or on auth-state changes.
  * - `refreshOrders()` is invoked ONLY when the admin opens the Orders tab or taps Refresh.
+ * - `refreshMyOrders()` is invoked ONLY when a signed-in customer opens My Orders
+ *   or taps Refresh there. Neither ever runs at app startup or on auth-state changes.
  */
 class OrderRepository(
   private val cloudDataSource: CloudOrderDataSource,
@@ -27,13 +36,41 @@ class OrderRepository(
   private val _ordersState = MutableStateFlow<AdminOrdersLoadState>(AdminOrdersLoadState.Idle)
   val ordersState: StateFlow<AdminOrdersLoadState> = _ordersState.asStateFlow()
 
-  suspend fun submitGuestOrder(order: ConfirmedOrder): Result<Unit> {
+  private val _myOrdersState =
+    MutableStateFlow<CustomerOrdersLoadState>(CustomerOrdersLoadState.Idle)
+  val myOrdersState: StateFlow<CustomerOrdersLoadState> = _myOrdersState.asStateFlow()
+
+  /** Saves a placed order — guest (no `userId`) or signed-in customer alike. */
+  suspend fun submitOrder(order: ConfirmedOrder): Result<Unit> {
     if (!cloudDataSource.isConfigured) {
       return Result.failure(IllegalStateException("Cloud order service is not configured."))
     }
     return runCatching {
       cloudDataSource.saveOrder(order).getOrThrow()
     }
+  }
+
+  suspend fun submitGuestOrder(order: ConfirmedOrder): Result<Unit> = submitOrder(order)
+
+  suspend fun refreshMyOrders(userId: String): Result<List<ConfirmedOrder>> {
+    _myOrdersState.value = CustomerOrdersLoadState.Loading
+    val result = runCatching { cloudDataSource.fetchMyOrders(userId).getOrThrow() }
+    return result
+      .onSuccess { fetched ->
+        val sorted = fetched.sortedByDescending { it.timestampMillis }
+        _myOrdersState.value = CustomerOrdersLoadState.Loaded(sorted)
+      }
+      .onFailure { err ->
+        _myOrdersState.value =
+          CustomerOrdersLoadState.Error(
+            err.localizedMessage?.takeIf { it.isNotBlank() }
+              ?: "Couldn't load your orders, tap Refresh."
+          )
+      }
+  }
+
+  fun resetMyOrdersState() {
+    _myOrdersState.value = CustomerOrdersLoadState.Idle
   }
 
   suspend fun refreshOrders(): Result<List<ConfirmedOrder>> {

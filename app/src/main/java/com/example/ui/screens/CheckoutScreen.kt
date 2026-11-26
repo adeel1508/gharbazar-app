@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -60,6 +61,9 @@ import com.example.viewmodel.StoreUiState
 @Composable
 fun CheckoutScreen(
   uiState: StoreUiState,
+  isCustomerSignedIn: Boolean = false,
+  customerEmail: String? = null,
+  onOpenAccount: (() -> Unit)? = null,
   onNameChange: (String) -> Unit,
   onPhoneChange: (String) -> Unit,
   onAddressChange: (String) -> Unit,
@@ -133,6 +137,69 @@ fun CheckoutScreen(
         style = MaterialTheme.typography.headlineMedium,
         color = MaterialTheme.colorScheme.onBackground,
       )
+
+      // Gentle, non-blocking login hint: login is optional, guest checkout
+      // always works. Never blocks placing the order.
+      if (isCustomerSignedIn) {
+        Card(
+          modifier = Modifier.fillMaxWidth().testTag("checkout_signed_in_card"),
+          colors =
+            CardDefaults.cardColors(
+              containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ),
+          shape = MaterialTheme.shapes.medium,
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.CheckCircle,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(22.dp),
+            )
+            Text(
+              text =
+                stringResource(
+                  R.string.checkout_signed_in_as,
+                  customerEmail.orEmpty().ifBlank { "your account" },
+                ),
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+      } else if (onOpenAccount != null) {
+        Card(
+          modifier = Modifier.fillMaxWidth().testTag("checkout_login_hint_card"),
+          colors =
+            CardDefaults.cardColors(
+              containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ),
+          shape = MaterialTheme.shapes.medium,
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Text(
+              text = stringResource(R.string.checkout_login_hint),
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.weight(1f),
+            )
+            TextButton(
+              onClick = onOpenAccount,
+              modifier = Modifier.minimumInteractiveComponentSize().testTag("checkout_login_button"),
+            ) {
+              Text(text = stringResource(R.string.account_login_title))
+            }
+          }
+        }
+      }
 
       CodOnlyNoticeCard()
 

@@ -2,6 +2,7 @@ package com.example
 
 import com.example.data.AdminOrdersLoadState
 import com.example.data.CloudOrderDataSource
+import com.example.data.CustomerOrdersLoadState
 import com.example.data.FirestoreOrderDataSource.Companion.resolveOrderTimestampMillis
 import com.example.data.FirestoreOrderDataSource.Companion.toFirestoreOrderMap
 import com.example.data.OrderRepository
@@ -77,6 +78,114 @@ class OrderRepositoryTest {
     assertEquals(product.fabric, productMap["fabric"])
     assertEquals(product.size, productMap["size"])
     assertEquals(product.description, productMap["description"])
+  }
+
+  @Test
+  fun firestoreOrderPayload_includesUserIdWhenSignedIn() {
+    val product = ProductCatalog.products[0]
+    val order =
+      ConfirmedOrder(
+        orderNumber = "GB-777777",
+        customerName = "Ayesha Khan",
+        phoneNumber = "03001234567",
+        deliveryAddress = "House 3, DHA",
+        city = "Lahore",
+        items = listOf(CartItem(product = product, quantity = 1)),
+        totalPkr = product.pricePkr,
+        timestampIso = "2026-04-01T12:00:00Z",
+        timestampMillis = 1775044800000L,
+        status = OrderStatus.PLACED,
+        userId = "uid_customer_1",
+      )
+
+    val map = order.toFirestoreOrderMap()
+
+    assertEquals("uid_customer_1", map["userId"])
+    assertEquals("GB-777777", map["orderNumber"])
+  }
+
+  @Test
+  fun refreshMyOrders_returnsOnlyOwnOrdersNewestFirstAndNeverFetchesOnInit() = runTest {
+    val ownOlder =
+      ConfirmedOrder(
+        orderNumber = "GB-100001",
+        customerName = "Ayesha",
+        phoneNumber = "03001111111",
+        deliveryAddress = "Street 1",
+        city = "Lahore",
+        items = listOf(CartItem(ProductCatalog.products[0], 1)),
+        totalPkr = 1949,
+        timestampMillis = 1000L,
+        status = OrderStatus.PLACED,
+        userId = "uid_ayesha",
+      )
+    val ownNewer =
+      ConfirmedOrder(
+        orderNumber = "GB-200002",
+        customerName = "Ayesha",
+        phoneNumber = "03001111111",
+        deliveryAddress = "Street 1",
+        city = "Lahore",
+        items = listOf(CartItem(ProductCatalog.products[4], 1)),
+        totalPkr = 1999,
+        timestampMillis = 5000L,
+        status = OrderStatus.DELIVERED,
+        userId = "uid_ayesha",
+      )
+    val someoneElses =
+      ConfirmedOrder(
+        orderNumber = "GB-300003",
+        customerName = "Bilal",
+        phoneNumber = "03002222222",
+        deliveryAddress = "Street 2",
+        city = "Karachi",
+        items = listOf(CartItem(ProductCatalog.products[0], 1)),
+        totalPkr = 1949,
+        timestampMillis = 9000L,
+        status = OrderStatus.PLACED,
+        userId = "uid_bilal",
+      )
+    val guestOrder =
+      ConfirmedOrder(
+        orderNumber = "GB-400004",
+        customerName = "Guest",
+        phoneNumber = "03003333333",
+        deliveryAddress = "Street 3",
+        city = "Islamabad",
+        items = listOf(CartItem(ProductCatalog.products[0], 1)),
+        totalPkr = 1949,
+        timestampMillis = 8000L,
+        status = OrderStatus.PLACED,
+        userId = null,
+      )
+
+    val fakeCloud =
+      FakeCloudOrderDataSource(
+        storedOrders = mutableListOf(ownOlder, ownNewer, someoneElses, guestOrder)
+      )
+    val repo = OrderRepository(fakeCloud)
+
+    // Never fetches on init — neither admin nor customer orders.
+    assertEquals(0, fakeCloud.fetchCallCount)
+    assertEquals(0, fakeCloud.fetchMyOrdersCallCount)
+    assertEquals(CustomerOrdersLoadState.Idle, repo.myOrdersState.value)
+
+    val refreshResult = repo.refreshMyOrders("uid_ayesha")
+    assertTrue(refreshResult.isSuccess)
+    assertEquals(1, fakeCloud.fetchMyOrdersCallCount)
+    assertEquals(0, fakeCloud.fetchCallCount)
+    val loaded = (repo.myOrdersState.value as CustomerOrdersLoadState.Loaded).orders
+    assertEquals(listOf("GB-200002", "GB-100001"), loaded.map { it.orderNumber })
+  }
+
+  @Test
+  fun refreshMyOrders_exposesErrorStateOnFailure() = runTest {
+    val failingCloud = FakeCloudOrderDataSource(shouldFailFetches = true)
+    val repo = OrderRepository(failingCloud)
+
+    val result = repo.refreshMyOrders("uid_ayesha")
+    assertTrue(result.isFailure)
+    assertTrue(repo.myOrdersState.value is CustomerOrdersLoadState.Error)
   }
 
   @Test
@@ -160,6 +269,7 @@ class OrderRepositoryTest {
   ) : CloudOrderDataSource {
     override val isConfigured: Boolean = true
     var fetchCallCount = 0
+    var fetchMyOrdersCallCount = 0
     val lastUpdatedStatus = mutableMapOf<String, OrderStatus>()
 
     override suspend fun fetchOrders(): Result<List<ConfirmedOrder>> {
@@ -168,6 +278,18 @@ class OrderRepositoryTest {
         return Result.failure(IllegalStateException("Permission denied or offline"))
       }
       return Result.success(storedOrders.sortedByDescending { it.timestampMillis })
+    }
+
+    override suspend fun fetchMyOrders(userId: String): Result<List<ConfirmedOrder>> {
+      fetchMyOrdersCallCount++
+      if (shouldFailFetches) {
+        return Result.failure(IllegalStateException("Permission denied or offline"))
+      }
+      return Result.success(
+        storedOrders
+          .filter { it.userId == userId }
+          .sortedByDescending { it.timestampMillis }
+      )
     }
 
     override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> {

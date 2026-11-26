@@ -165,6 +165,11 @@ data class ConfirmedOrder(
   val timestampMillis: Long = System.currentTimeMillis(),
   val status: OrderStatus = OrderStatus.PLACED,
   val documentId: String = orderNumber,
+  /**
+   * Firebase uid of the signed-in customer who placed the order.
+   * Null for guest orders — guest orders are never linked to an account.
+   */
+  val userId: String? = null,
 )
 
 fun currentIsoTimestamp(): String = Instant.now().toString()

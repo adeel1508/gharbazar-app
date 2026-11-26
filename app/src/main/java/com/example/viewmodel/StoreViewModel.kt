@@ -10,6 +10,10 @@ import com.example.data.AdminOrdersLoadState
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
 import com.example.data.CartStore
+import com.example.data.CustomerAccount
+import com.example.data.CustomerAuthDataSource
+import com.example.data.CustomerOrdersLoadState
+import com.example.data.FirebaseCustomerAuthDataSource
 import com.example.data.CatalogSyncStatus
 import com.example.data.CloudOrderDataSource
 import com.example.data.CloudProductDataSource
@@ -100,6 +104,11 @@ data class StoreUiState(
   val isAdminPasswordSet: Boolean = false,
   val isAdminPasswordChecked: Boolean = false,
   val isAdminUnlocked: Boolean = false,
+  // Customer account (optional login; guest checkout always works)
+  val customerAccount: CustomerAccount? = null,
+  val isCustomerAuthBusy: Boolean = false,
+  val customerAuthError: String? = null,
+  val myOrdersState: CustomerOrdersLoadState = CustomerOrdersLoadState.Idle,
   // Admin data & dialogs
   val adminOrdersState: AdminOrdersLoadState = AdminOrdersLoadState.Idle,
   val adminNotice: String? = null,
@@ -129,6 +138,7 @@ class StoreViewModel(
   private val orderRepository: OrderRepository =
     OrderRepository(cloudDataSource = NoOpCloudOrderDataSource),
   private val adminAuthDataSource: AdminAuthDataSource = NoOpAdminAuthDataSource,
+  private val customerAuthDataSource: CustomerAuthDataSource = NoOpCustomerAuthDataSource,
   private val cartStore: CartStore = NoOpCartStore,
   private val imageUploadService: ImageUploadService = NoOpImageUploadService,
   private val appUpdateDataSource: AppUpdateDataSource = NoOpAppUpdateDataSource,
@@ -224,6 +234,12 @@ class StoreViewModel(
     viewModelScope.launch {
       orderRepository.ordersState.collect { ordersState ->
         _uiState.update { it.copy(adminOrdersState = ordersState) }
+      }
+    }
+
+    viewModelScope.launch {
+      orderRepository.myOrdersState.collect { myOrdersState ->
+        _uiState.update { it.copy(myOrdersState = myOrdersState) }
       }
     }
   }
@@ -429,6 +445,11 @@ class StoreViewModel(
 
     val orderNumber = generateUniqueOrderNumber()
     val nowMillis = System.currentTimeMillis()
+    // Signed-in customer? Link the order to their account so the record
+    // survives reinstalls and shows on the website. Guest orders keep
+    // userId null — login is never required to order.
+    val signedInCustomer =
+      runCatching { customerAuthDataSource.currentCustomer() }.getOrNull()
     val confirmedOrder =
       ConfirmedOrder(
         orderNumber = orderNumber,
@@ -442,6 +463,7 @@ class StoreViewModel(
         timestampMillis = nowMillis,
         status = OrderStatus.PLACED,
         documentId = orderNumber,
+        userId = signedInCustomer?.uid,
       )
 
     _uiState.update { state ->
@@ -470,7 +492,7 @@ class StoreViewModel(
     viewModelScope.launch {
       val result =
         withContext(ioDispatcher) {
-          runCatching { orderRepository.submitGuestOrder(order) }
+          runCatching { orderRepository.submitOrder(order) }
             .getOrElse { Result.failure(it) }
         }
       _uiState.update { state ->
@@ -489,6 +511,125 @@ class StoreViewModel(
               }
           )
         }
+      }
+    }
+  }
+
+  // --- Customer Account (optional login; guest checkout always works) ---
+
+  /** Refreshes the signed-in customer from the shared Firebase session. */
+  fun prepareCustomerEntry() {
+    viewModelScope.launch {
+      val account =
+        withContext(ioDispatcher) {
+          runCatching { customerAuthDataSource.currentCustomer() }.getOrNull()
+        }
+      _uiState.update { it.copy(customerAccount = account, customerAuthError = null) }
+    }
+  }
+
+  fun signUpCustomer(name: String, email: String, password: String) {
+    if (_uiState.value.isCustomerAuthBusy) return
+    _uiState.update { it.copy(isCustomerAuthBusy = true, customerAuthError = null) }
+
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { customerAuthDataSource.signUp(name, email, password) }
+            .getOrElse { Result.failure(it) }
+        }
+      // Crash-safety rule #2: signing in updates UI state ONLY; never triggers
+      // data refresh or navigation.
+      _uiState.update { state ->
+        result.fold(
+          onSuccess = { account ->
+            state.copy(
+              customerAccount = account,
+              isCustomerAuthBusy = false,
+              customerAuthError = null,
+            )
+          },
+          onFailure = { error ->
+            state.copy(
+              isCustomerAuthBusy = false,
+              customerAuthError =
+                error.localizedMessage?.takeIf { it.isNotBlank() }
+                  ?: "Sign-up failed. Please try again.",
+            )
+          },
+        )
+      }
+    }
+  }
+
+  fun signInCustomer(email: String, password: String) {
+    if (_uiState.value.isCustomerAuthBusy) return
+    _uiState.update { it.copy(isCustomerAuthBusy = true, customerAuthError = null) }
+
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { customerAuthDataSource.signIn(email, password) }
+            .getOrElse { Result.failure(it) }
+        }
+      _uiState.update { state ->
+        result.fold(
+          onSuccess = { account ->
+            state.copy(
+              customerAccount = account,
+              isCustomerAuthBusy = false,
+              customerAuthError = null,
+            )
+          },
+          onFailure = { error ->
+            state.copy(
+              isCustomerAuthBusy = false,
+              customerAuthError =
+                error.localizedMessage?.takeIf { it.isNotBlank() }
+                  ?: "Login failed. Check your email and password.",
+            )
+          },
+        )
+      }
+    }
+  }
+
+  fun signOutCustomer() {
+    customerAuthDataSource.signOut()
+    orderRepository.resetMyOrdersState()
+    // Crash-safety rule #2: signing out updates UI state ONLY.
+    _uiState.update {
+      it.copy(
+        customerAccount = null,
+        isCustomerAuthBusy = false,
+        customerAuthError = null,
+        myOrdersState = CustomerOrdersLoadState.Idle,
+      )
+    }
+  }
+
+  fun clearCustomerAuthError() {
+    _uiState.update { it.copy(customerAuthError = null) }
+  }
+
+  // --- Customer My Orders (Refresh ONLY on My Orders open or Refresh tap) ---
+
+  fun onMyOrdersOpened() {
+    val account =
+      runCatching { customerAuthDataSource.currentCustomer() }.getOrNull() ?: return
+    refreshMyOrders(account.uid)
+  }
+
+  fun refreshMyOrders() {
+    val account =
+      runCatching { customerAuthDataSource.currentCustomer() }.getOrNull() ?: return
+    refreshMyOrders(account.uid)
+  }
+
+  private fun refreshMyOrders(userId: String) {
+    viewModelScope.launch {
+      withContext(ioDispatcher) {
+        runCatching { orderRepository.refreshMyOrders(userId) }
       }
     }
   }
@@ -968,6 +1109,7 @@ class StoreViewModel(
               storage = EncryptedPasswordStorage(appContext)
             )
           val adminAuthDataSource = FirebaseAdminAuthDataSource(appContext)
+          val customerAuthDataSource = FirebaseCustomerAuthDataSource(appContext)
           val cartStore = SharedPreferencesCartStore(appContext)
           val imageUploadService = CloudinaryImageUploader(appContext)
           val appUpdateDataSource = FirestoreAppUpdateDataSource(appContext)
@@ -976,6 +1118,7 @@ class StoreViewModel(
             passwordManager = passwordManager,
             orderRepository = orderRepository,
             adminAuthDataSource = adminAuthDataSource,
+            customerAuthDataSource = customerAuthDataSource,
             cartStore = cartStore,
             imageUploadService = imageUploadService,
             appUpdateDataSource = appUpdateDataSource,
@@ -998,6 +1141,8 @@ private object NoOpCloudProductDataSource : CloudProductDataSource {
 private object NoOpCloudOrderDataSource : CloudOrderDataSource {
   override val isConfigured: Boolean = false
   override suspend fun fetchOrders(): Result<List<ConfirmedOrder>> = Result.success(emptyList())
+  override suspend fun fetchMyOrders(userId: String): Result<List<ConfirmedOrder>> =
+    Result.success(emptyList())
   override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> = Result.success(Unit)
   override suspend fun updateOrderStatus(documentId: String, status: OrderStatus): Result<Unit> =
     Result.success(Unit)
@@ -1006,6 +1151,19 @@ private object NoOpCloudOrderDataSource : CloudOrderDataSource {
 private object NoOpAdminAuthDataSource : AdminAuthDataSource {
   override fun currentUserEmail(): String? = null
   override suspend fun signIn(email: String, password: String): Result<String> =
+    Result.failure(IllegalStateException("Auth not configured"))
+  override fun signOut() = Unit
+}
+
+object NoOpCustomerAuthDataSource : CustomerAuthDataSource {
+  override fun currentCustomer(): CustomerAccount? = null
+  override suspend fun signUp(
+    name: String,
+    email: String,
+    password: String,
+  ): Result<CustomerAccount> =
+    Result.failure(IllegalStateException("Auth not configured"))
+  override suspend fun signIn(email: String, password: String): Result<CustomerAccount> =
     Result.failure(IllegalStateException("Auth not configured"))
   override fun signOut() = Unit
 }

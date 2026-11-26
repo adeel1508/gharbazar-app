@@ -57,4 +57,20 @@
     <string name="order_number_label">Order Number</string>
     <string name="continue_shopping">Continue Shopping</string>
     <string name="back">Back</string>
+    <string name="account_title">My Account</string>
+    <string name="account_login_title">Log in</string>
+    <string name="account_signup_title">Create account</string>
+    <string name="account_login_subtitle">Log in to see your past orders on this phone and on the website.</string>
+    <string name="account_optional_note">Login is optional — you can order without logging in. Logging in only saves your orders to your account, so they stay even if you reinstall the app.</string>
+    <string name="account_signed_in_note">Your orders are saved to this account. They stay even if you reinstall the app, and they show on the website too.</string>
+    <string name="account_no_orders_title">No orders yet</string>
+    <string name="account_no_orders_subtitle">Your orders will appear here once you place one while logged in.</string>
+    <string name="checkout_login_hint">Log in to save this order to your account — login is optional, you can order as a guest.</string>
+    <string name="checkout_signed_in_as">Signed in as %1$s — this order will be saved to your account.</string>
+    <string name="field_full_name">Full Name</string>
+    <string name="field_email">Email</string>
+    <string name="field_password">Password</string>
+    <string name="sign_out">Sign out</string>
+    <string name="my_orders_title">My Orders</string>
+    <string name="refresh">Refresh</string>
 </resources>

@@ -53,6 +53,7 @@ import com.example.R
 import com.example.ui.screens.AdminRouteScreen
 import com.example.ui.screens.CartScreen
 import com.example.ui.screens.CheckoutScreen
+import com.example.ui.screens.CustomerAccountScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderConfirmationScreen
 import com.example.ui.screens.ProductDetailScreen
@@ -66,6 +67,7 @@ object StoreRoutes {
   const val PRODUCT_DETAIL = "product/{productId}"
   const val CONFIRMATION = "confirmation"
   const val ADMIN = "seller_admin"
+  const val ACCOUNT = "account"
 
   fun productDetail(productId: String): String = "product/$productId"
 }
@@ -224,6 +226,24 @@ fun GharBazarApp() {
                 viewModel.prepareAdminEntry()
                 navController.navigate(StoreRoutes.ADMIN)
               },
+              onOpenAccount = {
+                viewModel.prepareCustomerEntry()
+                navController.navigate(StoreRoutes.ACCOUNT)
+              },
+            )
+          }
+
+          composable(StoreRoutes.ACCOUNT) {
+            CustomerAccountScreen(
+              uiState = uiState,
+              onSignUp = viewModel::signUpCustomer,
+              onSignIn = viewModel::signInCustomer,
+              onSignOut = viewModel::signOutCustomer,
+              onMyOrdersOpened = viewModel::onMyOrdersOpened,
+              onRefreshMyOrders = viewModel::refreshMyOrders,
+              onClearAuthError = viewModel::clearCustomerAuthError,
+              onBack = { navController.popBackStack() },
+              onBrowseProducts = { navigateToTab(StoreRoutes.HOME) },
             )
           }
 
@@ -266,6 +286,12 @@ fun GharBazarApp() {
           composable(StoreRoutes.CHECKOUT) {
             CheckoutScreen(
               uiState = uiState,
+              isCustomerSignedIn = uiState.customerAccount != null,
+              customerEmail = uiState.customerAccount?.email,
+              onOpenAccount = {
+                viewModel.prepareCustomerEntry()
+                navController.navigate(StoreRoutes.ACCOUNT)
+              },
               onNameChange = viewModel::updateCustomerName,
               onPhoneChange = viewModel::updatePhoneNumber,
               onAddressChange = viewModel::updateDeliveryAddress,

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.LocalShipping
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
@@ -100,6 +101,7 @@ fun HomeScreen(
   onQuickAddToCart: (Product) -> Unit,
   onOpenCart: () -> Unit,
   onOpenSellerAdmin: () -> Unit,
+  onOpenAccount: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val focusManager = LocalFocusManager.current
@@ -117,6 +119,7 @@ fun HomeScreen(
         cartCount = uiState.cartItemCount,
         onOpenCart = onOpenCart,
         onOpenSellerAdmin = onOpenSellerAdmin,
+        onOpenAccount = onOpenAccount,
       )
     }
 
@@ -244,6 +247,7 @@ private fun MarketplaceTopHeader(
   cartCount: Int,
   onOpenCart: () -> Unit,
   onOpenSellerAdmin: () -> Unit,
+  onOpenAccount: () -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -293,6 +297,26 @@ private fun MarketplaceTopHeader(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+      Surface(
+        onClick = onOpenAccount,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.minimumInteractiveComponentSize().testTag("account_button"),
+      ) {
+        Box(
+          modifier = Modifier.size(44.dp),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Person,
+            contentDescription = "My Account",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+          )
+        }
+      }
+
       OutlinedButton(
         onClick = onOpenSellerAdmin,
         shape = CircleShape,
