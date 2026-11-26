@@ -316,6 +316,7 @@ fun GharBazarApp() {
               onClearNotice = viewModel::clearAdminNotice,
               onAdminSignIn = viewModel::signInAdmin,
               onAdminSignOut = viewModel::signOutAdmin,
+              onRefreshOrders = viewModel::refreshAdminOrders,
             )
           }
         }

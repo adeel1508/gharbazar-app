@@ -38,9 +38,12 @@ interface AdminAuthDataSource {
  * rejected by the Firestore rules ("Missing or insufficient permissions"):
  * products `allow write: if isAdmin()` needs a signed-in user with the
  * admin email. Signing in here also unlocks the Admin Orders tab — the
- * rules let the admin read every order, and the active Firestore orders
- * listener re-authenticates automatically when the auth state changes, so
- * orders start appearing without re-subscribing.
+ * rules let the admin read every order. NOTE: a Firestore listener that
+ * was attached BEFORE sign-in and failed with PERMISSION_DENIED does NOT
+ * recover when the auth state changes — the SDK removes it. That is why
+ * [OrderRepository.refreshOrders] exists: the admin panel calls it only
+ * when the admin opens the Orders tab (or taps its Refresh button).
+ * Nothing re-subscribes on startup or on auth-state change.
  *
  * The session persists across app restarts (Firebase Auth persistence), so
  * the owner signs in once and stays signed in.

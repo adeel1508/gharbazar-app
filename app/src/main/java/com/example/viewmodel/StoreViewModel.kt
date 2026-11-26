@@ -447,6 +447,18 @@ class StoreViewModel(
   }
 
   /**
+   * Re-subscribes to the cloud orders feed ([OrderRepository.refreshOrders]).
+   * USER-TRIGGERED ONLY: call this when the admin opens the Orders tab in
+   * the admin panel, or taps the Refresh button there. NEVER call it from
+   * init or from the authState collector — the v1.0.12 design did that and
+   * the app started crashing on launch after admin sign-in, so it was
+   * reverted. An auth-state change on its own must never refresh orders.
+   */
+  fun refreshAdminOrders() {
+    orderRepository.refreshOrders()
+  }
+
+  /**
    * Cloud product writes need the admin to be signed in: the Firestore rules
    * only allow product writes for the signed-in admin email. Without this
    * check the write would fail with PERMISSION_DENIED after the product had
@@ -492,9 +504,18 @@ class StoreViewModel(
     val resolvedRes = ProductCatalog.resolveDrawableForKey(imageKey, normalizedCategory)
     // The gallery is the cleaned URL list; the cover is the first gallery
     // photo (or the single imageUri when no list was given).
+    // Only remote (http/https) URLs are ever persisted: a photo picked from
+    // the phone is a device-local content:// URI — the admin form uploads
+    // it to free photo hosting first and saves only the returned https
+    // URL. This filter is the last line of defence against a stray local
+    // link reaching Firestore, where it would be broken on the website
+    // and on every other device.
     val cleanImageUris =
       imageUris.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-    val coverUri = imageUri?.takeIf { it.isNotBlank() } ?: cleanImageUris.firstOrNull()
+        .filter { it.startsWith("http://") || it.startsWith("https://") }
+    val coverUri =
+      imageUri?.takeIf { it.isNotBlank() && (it.startsWith("http://") || it.startsWith("https://")) }
+        ?: cleanImageUris.firstOrNull()
     val galleryUris =
       if (coverUri != null && coverUri !in cleanImageUris) listOf(coverUri) + cleanImageUris
       else cleanImageUris

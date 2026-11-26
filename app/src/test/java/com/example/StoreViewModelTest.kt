@@ -1,12 +1,15 @@
 package com.example
 
+import com.example.data.AdminAuthDataSource
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
 import com.example.data.CloudOrderDataSource
 import com.example.data.CloudOrdersSnapshot
+import com.example.data.GHARBAZAR_ADMIN_EMAIL
 import com.example.data.OrderRepository
 import com.example.data.ProductCatalog
 import com.example.data.shouldPromptForUpdate
+import com.example.model.CartItem
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
 import com.example.model.ProductCategory
@@ -20,6 +23,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -333,6 +337,80 @@ class StoreViewModelTest {
   }
 
   @Test
+  fun authStateChange_doesNotRefreshOrders() {
+    // REGRESSION GUARD for the v1.0.12 crash: that design called
+    // orderRepository.refreshOrders() from the authState collector, so
+    // every sign-in (including the restored session at startup) re-
+    // subscribed — and the app started crashing on launch after admin
+    // sign-in. The redesigned flow refreshes orders ONLY when the admin
+    // opens the Orders tab or taps its Refresh button, so an auth-state
+    // change on its own must never touch the orders subscription.
+    val (vm, flakyCloud, fakeAuth) = flakyOrdersViewModel()
+
+    // First subscription died with PERMISSION_DENIED: no orders.
+    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+    assertEquals(1, flakyCloud.subscriptions)
+
+    // Sign-in: the UI state updates, but no re-subscribe happens.
+    fakeAuth.emitSignedIn(true)
+    assertTrue(vm.uiState.value.isAdminSignedIn)
+    assertEquals(1, flakyCloud.subscriptions)
+    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+
+    // Sign-out: still no re-subscribe.
+    fakeAuth.emitSignedIn(false)
+    assertFalse(vm.uiState.value.isAdminSignedIn)
+    assertEquals(1, flakyCloud.subscriptions)
+    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+  }
+
+  @Test
+  fun refreshAdminOrders_recoversOrdersAfterInitialPermissionDenied() {
+    // The explicit, user-triggered path (Orders tab opened / Refresh
+    // button tapped) re-subscribes and recovers the orders that the
+    // pre-sign-in listener never delivered.
+    val (vm, flakyCloud, _) = flakyOrdersViewModel()
+
+    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+    assertEquals(1, flakyCloud.subscriptions)
+
+    vm.refreshAdminOrders()
+
+    assertEquals(2, flakyCloud.subscriptions)
+    assertEquals(listOf("GB-641124"), vm.uiState.value.adminOrders.map { it.orderNumber })
+  }
+
+  /**
+   * A ViewModel whose orders feed dies with PERMISSION_DENIED on its
+   * first subscription (listener attached before admin sign-in) and goes
+   * live on later ones — the live "0 orders" race, in test form.
+   */
+  private fun flakyOrdersViewModel():
+    Triple<StoreViewModel, FlakyCloudOrderDataSource, FakeControllableAdminAuth> {
+    val liveOrder =
+      ConfirmedOrder(
+        orderNumber = "GB-641124",
+        customerName = "Farzi Test",
+        phoneNumber = "03001234567",
+        deliveryAddress = "Test Address, Gulzar Colony",
+        city = "Lahore",
+        items = listOf(CartItem(ProductCatalog.products[0], 1)),
+        totalPkr = 1949,
+        timestamp = 1764000000000L,
+        status = OrderStatus.PLACED,
+      )
+    val flakyCloud = FlakyCloudOrderDataSource(liveOrder)
+    val orderRepo =
+      OrderRepository(
+        flakyCloud,
+        scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+      )
+    val fakeAuth = FakeControllableAdminAuth()
+    val vm = StoreViewModel(orderRepository = orderRepo, adminAuth = fakeAuth)
+    return Triple(vm, flakyCloud, fakeAuth)
+  }
+
+  @Test
   fun updateCheck_promptsOnlyWhenNewerVersionAndUrlExist_andDismissesCleanly() {
     val newerUpdateSource =
       object : AppUpdateDataSource {
@@ -391,5 +469,60 @@ class StoreViewModelTest {
 
     assertNull(vm.uiState.value.availableUpdate)
     assertEquals(8, vm.uiState.value.allProducts.size)
+  }
+}
+
+/**
+ * Simulates the live sign-in race: the FIRST orders subscription fails
+ * with PERMISSION_DENIED (listener attached before the admin signed in)
+ * and never emits again; later subscriptions get the live feed.
+ */
+private class FlakyCloudOrderDataSource(
+  private val order: ConfirmedOrder,
+) : CloudOrderDataSource {
+  override val isConfigured: Boolean = true
+  var subscriptions = 0
+  private val snapshots =
+    MutableStateFlow<CloudOrdersSnapshot>(
+      CloudOrdersSnapshot.Loaded(listOf(order), false)
+    )
+
+  override fun observeOrders(): Flow<CloudOrdersSnapshot> {
+    subscriptions++
+    return if (subscriptions == 1) {
+      flowOf(CloudOrdersSnapshot.Unavailable("PERMISSION_DENIED"))
+    } else {
+      snapshots
+    }
+  }
+
+  override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> =
+    Result.success(Unit)
+
+  override suspend fun updateOrderStatus(
+    orderNumber: String,
+    status: OrderStatus,
+  ): Result<Unit> = Result.success(Unit)
+}
+
+/** Admin auth whose signed-in state the test drives by hand. */
+private class FakeControllableAdminAuth : AdminAuthDataSource {
+  override val adminEmail: String = GHARBAZAR_ADMIN_EMAIL
+  override val isSignedIn: Boolean
+    get() = _authState.value
+  private val _authState = MutableStateFlow(false)
+  override val authState: Flow<Boolean> = _authState
+
+  fun emitSignedIn(signedIn: Boolean) {
+    _authState.value = signedIn
+  }
+
+  override suspend fun signIn(password: String): Result<Unit> {
+    _authState.value = true
+    return Result.success(Unit)
+  }
+
+  override fun signOut() {
+    _authState.value = false
   }
 }

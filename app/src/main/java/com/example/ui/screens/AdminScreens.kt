@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -36,11 +37,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
@@ -82,6 +83,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,6 +101,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.CatalogSyncStatus
+import com.example.data.CloudinaryUploader
 import com.example.data.GHARBAZAR_ADMIN_EMAIL
 import com.example.data.ProductCatalog
 import com.example.model.ConfirmedOrder
@@ -111,6 +114,7 @@ import com.example.ui.components.CachedProductImage
 import com.example.viewmodel.StoreUiState
 import java.text.SimpleDateFormat
 import java.util.Date
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private enum class AdminDashboardTab(val label: String) {
@@ -125,6 +129,30 @@ private enum class AdminDashboardTab(val label: String) {
  */
 internal fun parseImageUrls(text: String): List<String> =
   text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
+
+/**
+ * True when the string is a remote photo URL (http/https) that can be
+ * stored in Firestore and shown on the website. Device-local URIs
+ * (content://, file://) are NOT remote — a photo picked from the phone
+ * gallery is only a local link and is never uploaded anywhere.
+ */
+internal fun isRemotePhotoUrl(url: String?): Boolean =
+  url != null && (url.startsWith("http://") || url.startsWith("https://"))
+
+/**
+ * Builds the gallery saved with a product: the existing remote cover
+ * first (when it is a remote URL), then the URLs typed in the
+ * "Photo URLs" field. A photo picked from the phone gallery is a
+ * device-local content:// URI — it is deliberately left out here and
+ * never reaches Firestore; when one was uploaded, the caller prepends
+ * the returned https URL instead. The same goes for any non-remote line
+ * typed in the URLs field.
+ */
+internal fun buildAdminGallery(imageUri: String?, imageUrlsText: String): List<String> =
+  buildList {
+    imageUri?.takeIf { isRemotePhotoUrl(it) }?.let { add(it) }
+    addAll(parseImageUrls(imageUrlsText).filter { isRemotePhotoUrl(it) })
+  }.distinct()
 
 @Composable
 fun AdminRouteScreen(
@@ -152,6 +180,12 @@ fun AdminRouteScreen(
   onClearNotice: () -> Unit,
   onAdminSignIn: (String) -> Unit,
   onAdminSignOut: () -> Unit,
+  /**
+   * Re-subscribes to the cloud orders feed. Called ONLY when the admin
+   * opens the Orders tab, or taps the Refresh button there — never on
+   * startup and never on an auth-state change.
+   */
+  onRefreshOrders: () -> Unit,
 ) {
   BackHandler(onBack = onBackToStore)
 
@@ -187,6 +221,7 @@ fun AdminRouteScreen(
       onClearNotice = onClearNotice,
       onAdminSignIn = onAdminSignIn,
       onAdminSignOut = onAdminSignOut,
+      onRefreshOrders = onRefreshOrders,
     )
   }
 }
@@ -610,6 +645,7 @@ private fun AdminDashboardScreen(
   onClearNotice: () -> Unit,
   onAdminSignIn: (String) -> Unit,
   onAdminSignOut: () -> Unit,
+  onRefreshOrders: () -> Unit,
 ) {
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedTab by remember { mutableStateOf(AdminDashboardTab.PRODUCTS) }
@@ -688,7 +724,15 @@ private fun AdminDashboardScreen(
               }
             Tab(
               selected = selectedTab == tab,
-              onClick = { selectedTab = tab },
+              onClick = {
+                // Orders are re-fetched ONLY here, when the admin opens the
+                // Orders tab — never on startup and never when the sign-in
+                // state changes. A listener attached before sign-in died
+                // with PERMISSION_DENIED, so opening the tab is what
+                // re-subscribes it (see OrderRepository.refreshOrders).
+                if (tab == AdminDashboardTab.ORDERS) onRefreshOrders()
+                selectedTab = tab
+              },
               text = { Text("${tab.label} ($count)") },
               modifier = Modifier.testTag(tabTag),
             )
@@ -789,6 +833,34 @@ private fun AdminDashboardScreen(
               onSignIn = onAdminSignIn,
               onSignOut = onAdminSignOut,
             )
+          }
+
+          // Manual refresh: the orders listener attached before admin
+          // sign-in died with PERMISSION_DENIED, so orders only appear
+          // after a re-subscribe — which happens when this tab is opened
+          // or when this button is tapped. (If the admin signed in while
+          // already on this tab, this button is the way to load orders.)
+          item(key = "orders_refresh") {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Text(
+                text =
+                  if (uiState.isAdminSignedIn) "Orders sync here automatically (newest first)."
+                  else "Sign in above to load orders.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+              )
+              OutlinedButton(
+                onClick = onRefreshOrders,
+                modifier = Modifier.testTag("admin_refresh_orders_button"),
+              ) {
+                Text("Refresh")
+              }
+            }
           }
 
           if (uiState.adminOrders.isEmpty()) {
@@ -1474,6 +1546,14 @@ private fun AdminProductEditorDialog(
     mutableStateOf(initialProduct?.imageKey ?: ProductCatalog.photoOptions.first().key)
   }
   var imageUri by remember(initialProduct) { mutableStateOf(initialProduct?.imageUri) }
+  /**
+   * A photo picked from the phone gallery in this editing session. Kept
+   * separate from [imageUri] on purpose: it is a device-local content://
+   * URI and must never be saved to Firestore as-is. On save it is
+   * uploaded to free photo hosting first (see [CloudinaryUploader]) and
+   * only the returned https URL goes into the saved gallery.
+   */
+  var pickedPhotoUri by remember { mutableStateOf<Uri?>(null) }
   var imageUrlsText by remember(initialProduct) {
     mutableStateOf(
       (initialProduct?.imageUris?.ifEmpty { listOfNotNull(initialProduct.imageUri) })
@@ -1486,6 +1566,8 @@ private fun AdminProductEditorDialog(
     mutableStateOf((initialProduct?.stockQuantity ?: 20).toString())
   }
   var errorText by remember { mutableStateOf<String?>(null) }
+  var isUploadingPhoto by remember { mutableStateOf(false) }
+  val coroutineScope = rememberCoroutineScope()
 
   val photoPickerLauncher =
     rememberLauncherForActivityResult(
@@ -1498,7 +1580,9 @@ private fun AdminProductEditorDialog(
               Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
           }
-          imageUri = uri.toString()
+          // Preview only — the picked photo is NOT stored in imageUri
+          // and is never saved to Firestore (see pickedPhotoUri).
+          pickedPhotoUri = uri
         }
       },
     )
@@ -1706,26 +1790,55 @@ private fun AdminProductEditorDialog(
           )
           Spacer(modifier = Modifier.width(8.dp))
           Text(
-            if (imageUri != null) "Custom Photo Selected (Change)"
+            if (pickedPhotoUri != null) "Custom Photo Selected (Change)"
             else "Choose Photo from Gallery"
           )
         }
 
-        if (imageUri != null) {
+        if (pickedPhotoUri != null) {
+          // Preview of the picked phone photo, so the admin can see what
+          // was chosen. It is uploaded to free photo hosting when the
+          // product is saved, so it will appear on the website too.
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
-            Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+            Box(
+              modifier =
+                Modifier.size(60.dp)
+                  .clip(MaterialTheme.shapes.small)
+                  .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = MaterialTheme.shapes.small,
+                  ),
+            ) {
+              CachedProductImage(
+                imageRes = ProductCatalog.photoOptions.first().imageRes,
+                imageUri = pickedPhotoUri.toString(),
+                contentDescription = "Picked photo preview",
+                cacheKey = "picked_${pickedPhotoUri}",
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
             Text(
-              text = "Custom gallery image attached",
+              text = "Picked photo",
               style = MaterialTheme.typography.bodySmall,
               modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = { imageUri = null }) {
-              Text("Reset")
+            IconButton(onClick = { pickedPhotoUri = null }) {
+              Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Remove picked photo",
+              )
             }
           }
+          Text(
+            text =
+              "This photo will be uploaded to free photo hosting when you save, so it will appear on the website too. Remove it with the X if you don't want it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
         }
 
         OutlinedTextField(
@@ -1763,6 +1876,31 @@ private fun AdminProductEditorDialog(
           val parsedQty = stockQtyText.toIntOrNull() ?: 0
           val effectiveCategory =
             if (useCustomCategory) customCategory.trim() else categoryLabel
+          // Saves with the uploaded photo URL first (when one was just
+          // uploaded), then the remote cover / typed URLs. First entry is
+          // the cover photo. A device-local content:// URI is never in
+          // here — only remote https URLs are saved. (Price is a
+          // parameter so the null-check smart cast still applies.)
+          val saveWithPhoto: (String?, Int) -> Unit = { uploadedPhotoUrl, price ->
+            val gallery =
+              buildList {
+                uploadedPhotoUrl?.let { add(it) }
+                addAll(buildAdminGallery(imageUri, imageUrlsText))
+              }.distinct()
+            onSave(
+              name,
+              price,
+              effectiveCategory,
+              fabric,
+              size,
+              description,
+              imageKey,
+              gallery.firstOrNull(),
+              gallery,
+              inStock,
+              parsedQty,
+            )
+          }
           when {
             name.isBlank() -> errorText = "Product name is required."
             parsedPrice == null || parsedPrice <= 0 ->
@@ -1778,32 +1916,34 @@ private fun AdminProductEditorDialog(
             description.isBlank() -> errorText = "Full description is required."
             inStock && parsedQty <= 0 -> errorText = "Enter stock quantity greater than 0."
             else -> {
-              // Gallery: a photo picked from the device first, then the
-              // URLs from the text field. First entry is the cover photo.
-              val gallery =
-                buildList {
-                  imageUri?.takeIf { it.isNotBlank() }?.let { add(it) }
-                  addAll(parseImageUrls(imageUrlsText))
-                }.distinct()
-              onSave(
-                name,
-                parsedPrice,
-                effectiveCategory,
-                fabric,
-                size,
-                description,
-                imageKey,
-                gallery.firstOrNull(),
-                gallery,
-                inStock,
-                parsedQty,
-              )
+              // Upload-first: a photo picked from the phone is a
+              // device-local content:// URI, so upload it to free photo
+              // hosting first and save only the returned https URL.
+              val picked = pickedPhotoUri
+              if (picked == null) {
+                saveWithPhoto(null, parsedPrice)
+              } else {
+                errorText = null
+                isUploadingPhoto = true
+                coroutineScope.launch {
+                  val result = CloudinaryUploader.uploadPhoto(context, picked)
+                  isUploadingPhoto = false
+                  result
+                    .onSuccess { uploadedUrl -> saveWithPhoto(uploadedUrl, parsedPrice) }
+                    .onFailure { error ->
+                      errorText =
+                        "Photo upload failed: ${error.message ?: "try again"}. " +
+                          "The product was not saved."
+                    }
+                }
+              }
             }
           }
         },
+        enabled = !isUploadingPhoto,
         modifier = Modifier.testTag("admin_save_product_button"),
       ) {
-        Text("Save Product")
+        Text(if (isUploadingPhoto) "Uploading photo…" else "Save Product")
       }
     },
     dismissButton = {
