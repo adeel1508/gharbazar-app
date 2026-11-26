@@ -9,6 +9,7 @@ import com.example.data.AdminAuthDataSource
 import com.example.data.AdminOrdersLoadState
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
+import com.example.data.CartStore
 import com.example.data.CatalogSyncStatus
 import com.example.data.CloudOrderDataSource
 import com.example.data.CloudProductDataSource
@@ -20,9 +21,12 @@ import com.example.data.FirestoreOrderDataSource
 import com.example.data.FirestoreProductDataSource
 import com.example.data.ImageUploadService
 import com.example.data.ManualUpdateCheckResult
+import com.example.data.NoOpCartStore
 import com.example.data.OrderRepository
 import com.example.data.ProductCatalog
 import com.example.data.ProductRepository
+import com.example.data.SavedCartEntry
+import com.example.data.SharedPreferencesCartStore
 import com.example.model.CartItem
 import com.example.model.CheckoutFormState
 import com.example.model.ConfirmedOrder
@@ -125,6 +129,7 @@ class StoreViewModel(
   private val orderRepository: OrderRepository =
     OrderRepository(cloudDataSource = NoOpCloudOrderDataSource),
   private val adminAuthDataSource: AdminAuthDataSource = NoOpAdminAuthDataSource,
+  private val cartStore: CartStore = NoOpCartStore,
   private val imageUploadService: ImageUploadService = NoOpImageUploadService,
   private val appUpdateDataSource: AppUpdateDataSource = NoOpAppUpdateDataSource,
   private val currentVersionCode: Int = BuildConfig.VERSION_CODE,
@@ -145,12 +150,38 @@ class StoreViewModel(
 
   private val usedOrderNumbers = mutableSetOf<String>()
 
+  // True once the saved cart has been restored (or the restore was attempted).
+  private var cartRestored = false
+
   init {
     // Crash-safety rule #1: At startup, load ONLY the product list.
     // No orders listener, no auth-triggered work, no update check, no dialogs.
     viewModelScope.launch {
       repository.products.collect { latestProducts ->
+        // Cart restore (once, when the first real product list arrives):
+        // rebuild the saved cart from live products only. Deleted or
+        // out-of-stock products are silently dropped and prices always come
+        // from Firestore. A corrupt or unreadable save can never crash
+        // startup — it just restores to an empty cart.
+        var restoredCart: List<CartItem>? = null
+        if (!cartRestored && latestProducts.isNotEmpty()) {
+          val saved =
+            runCatching { cartStore.loadSavedEntries() }.getOrElse { emptyList() }
+          cartRestored = true
+          restoredCart =
+            saved.mapNotNull { entry ->
+              val product = latestProducts.find { it.id == entry.productId }
+              if (product == null || !product.isAvailable) {
+                null
+              } else {
+                CartItem(product = product, quantity = entry.quantity.coerceAtLeast(1))
+              }
+            }
+        }
         _uiState.update { state ->
+          val baseCart =
+            if (restoredCart != null && state.cartItems.isEmpty()) restoredCart
+            else state.cartItems
           val categories = buildCategoryList(latestProducts)
           val activeCategory =
             if (categories.any { it.equals(state.selectedCategory, ignoreCase = true) }) {
@@ -159,7 +190,7 @@ class StoreViewModel(
               ProductCategories.ALL
             }
           val syncedCart =
-            state.cartItems.mapNotNull { cartItem ->
+            baseCart.mapNotNull { cartItem ->
               val updatedProduct = latestProducts.find { it.id == cartItem.product.id }
               if (updatedProduct == null || !updatedProduct.isAvailable) {
                 null
@@ -277,6 +308,7 @@ class StoreViewModel(
         }
       state.copy(cartItems = updatedCart)
     }
+    persistCart()
   }
 
   fun increaseQuantity(productId: String) {
@@ -291,6 +323,7 @@ class StoreViewModel(
         }
       state.copy(cartItems = updatedCart)
     }
+    persistCart()
   }
 
   fun decreaseQuantity(productId: String) {
@@ -305,11 +338,29 @@ class StoreViewModel(
         }
       state.copy(cartItems = updatedCart)
     }
+    persistCart()
   }
 
   fun removeFromCart(productId: String) {
     _uiState.update { state ->
       state.copy(cartItems = state.cartItems.filterNot { it.product.id == productId })
+    }
+    persistCart()
+  }
+
+  // --- Local cart persistence (guest checkout: no login, no Firestore cart) ---
+
+  private fun persistCart() {
+    val entries =
+      _uiState.value.cartItems.map { SavedCartEntry(it.product.id, it.quantity) }
+    viewModelScope.launch {
+      runCatching { cartStore.saveEntries(entries) }
+    }
+  }
+
+  private fun clearPersistedCart() {
+    viewModelScope.launch {
+      runCatching { cartStore.clearSavedEntries() }
     }
   }
 
@@ -401,6 +452,8 @@ class StoreViewModel(
         orderSyncState = OrderSyncState.Saving,
       )
     }
+    // The order is placed: the saved cart goes away with the live one.
+    clearPersistedCart()
 
     // Never block UI while saving guest order; show error state on failure, never crash.
     submitOrderInBackground(confirmedOrder)
@@ -915,6 +968,7 @@ class StoreViewModel(
               storage = EncryptedPasswordStorage(appContext)
             )
           val adminAuthDataSource = FirebaseAdminAuthDataSource(appContext)
+          val cartStore = SharedPreferencesCartStore(appContext)
           val imageUploadService = CloudinaryImageUploader(appContext)
           val appUpdateDataSource = FirestoreAppUpdateDataSource(appContext)
           return StoreViewModel(
@@ -922,6 +976,7 @@ class StoreViewModel(
             passwordManager = passwordManager,
             orderRepository = orderRepository,
             adminAuthDataSource = adminAuthDataSource,
+            cartStore = cartStore,
             imageUploadService = imageUploadService,
             appUpdateDataSource = appUpdateDataSource,
             currentVersionCode = BuildConfig.VERSION_CODE,
