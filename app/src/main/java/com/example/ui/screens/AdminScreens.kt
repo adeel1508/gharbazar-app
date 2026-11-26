@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -186,6 +187,14 @@ fun AdminRouteScreen(
    * startup and never on an auth-state change.
    */
   onRefreshOrders: () -> Unit,
+  /**
+   * Manual update check. Called ONLY when the admin taps the
+   * "Check for Updates" button in the admin panel — never on startup.
+   * (v1.0.14 crashed on launch when an update was pending because the
+   * check ran automatically at startup and the dialog popped up on its
+   * own; that automatic check is gone.)
+   */
+  onCheckForUpdates: () -> Unit,
 ) {
   BackHandler(onBack = onBackToStore)
 
@@ -222,6 +231,7 @@ fun AdminRouteScreen(
       onAdminSignIn = onAdminSignIn,
       onAdminSignOut = onAdminSignOut,
       onRefreshOrders = onRefreshOrders,
+      onCheckForUpdates = onCheckForUpdates,
     )
   }
 }
@@ -646,6 +656,7 @@ private fun AdminDashboardScreen(
   onAdminSignIn: (String) -> Unit,
   onAdminSignOut: () -> Unit,
   onRefreshOrders: () -> Unit,
+  onCheckForUpdates: () -> Unit,
 ) {
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedTab by remember { mutableStateOf(AdminDashboardTab.PRODUCTS) }
@@ -699,6 +710,18 @@ private fun AdminDashboardScreen(
               )
               Spacer(modifier = Modifier.width(4.dp))
               Text("Change Password")
+            }
+            TextButton(
+              onClick = onCheckForUpdates,
+              modifier = Modifier.testTag("admin_check_for_updates_button"),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.SystemUpdate,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Check for Updates")
             }
           },
           colors =

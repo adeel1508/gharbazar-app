@@ -151,14 +151,6 @@ class StoreViewModel(
     }
 
     viewModelScope.launch {
-      val info = runCatching { appUpdateDataSource.fetchUpdateInfo(currentVersionCode) }.getOrNull()
-      val prompt = shouldPromptForUpdate(info, currentVersionCode)
-      if (prompt != null) {
-        _uiState.update { it.copy(availableUpdate = prompt) }
-      }
-    }
-
-    viewModelScope.launch {
       adminAuth.authState.collect { signedIn ->
         _uiState.update {
           it.copy(
@@ -172,6 +164,28 @@ class StoreViewModel(
 
   fun dismissUpdateDialog() {
     _uiState.update { it.copy(availableUpdate = null) }
+  }
+
+  /**
+   * Manual update check — USER-TRIGGERED ONLY, from the "Check for Updates"
+   * button in the admin panel. NEVER call it from init: v1.0.14 crashed on
+   * launch whenever an update was pending, because the automatic check ran
+   * at startup and the "Update available" dialog popped up on its own. A
+   * newer version shows the same dialog; otherwise the admin panel shows a
+   * short notice ("App is up to date", or a retry notice if the check fails).
+   */
+  fun checkForUpdates() {
+    viewModelScope.launch {
+      val result = runCatching { appUpdateDataSource.fetchUpdateInfo(currentVersionCode) }
+      val prompt = result.getOrNull()?.let { shouldPromptForUpdate(it, currentVersionCode) }
+      if (prompt != null) {
+        _uiState.update { it.copy(availableUpdate = prompt) }
+      } else if (result.isFailure) {
+        _uiState.update { it.copy(adminNotice = "Could not check for updates. Please try again.") }
+      } else {
+        _uiState.update { it.copy(adminNotice = "App is up to date.") }
+      }
+    }
   }
 
   fun updateSearchQuery(query: String) {

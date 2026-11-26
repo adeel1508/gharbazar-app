@@ -428,6 +428,12 @@ class StoreViewModelTest {
         currentVersionCode = 1,
       )
 
+    // No automatic check at startup: nothing is prompted on launch.
+    assertNull(vm.uiState.value.availableUpdate)
+
+    // The manual check (admin "Check for Updates" button) prompts.
+    vm.checkForUpdates()
+
     val available = vm.uiState.value.availableUpdate
     assertNotNull(available)
     assertEquals(2, available?.latestVersionCode)
@@ -467,8 +473,47 @@ class StoreViewModelTest {
         currentVersionCode = 1,
       )
 
+    // No automatic check at startup.
     assertNull(vm.uiState.value.availableUpdate)
+
+    // Even the manual check must not prompt when the fetch fails.
+    vm.checkForUpdates()
+    assertNull(vm.uiState.value.availableUpdate)
+    assertEquals("Could not check for updates. Please try again.", vm.uiState.value.adminNotice)
     assertEquals(8, vm.uiState.value.allProducts.size)
+  }
+
+  @Test
+  fun updateCheck_doesNotRunAutomaticallyAtStartup_onlyOnManualCheck() {
+    // REGRESSION GUARD for the v1.0.14 crash: the automatic update check
+    // ran at launch and the "Update available" dialog popped up on its own
+    // whenever an update was pending — and the app crashed. The check must
+    // now run ONLY when the admin taps "Check for Updates".
+    var fetchCount = 0
+    val countingSource =
+      object : AppUpdateDataSource {
+        override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo {
+          fetchCount++
+          return AppUpdateInfo(
+            latestVersionCode = 2,
+            apkUrl = "https://gharbazar.pk/app-release.apk",
+          )
+        }
+      }
+    val vm =
+      StoreViewModel(
+        appUpdateDataSource = countingSource,
+        currentVersionCode = 1,
+      )
+
+    // Startup alone must never fetch update info.
+    assertEquals(0, fetchCount)
+    assertNull(vm.uiState.value.availableUpdate)
+
+    // The manual check fetches exactly once and prompts.
+    vm.checkForUpdates()
+    assertEquals(1, fetchCount)
+    assertNotNull(vm.uiState.value.availableUpdate)
   }
 }
 
