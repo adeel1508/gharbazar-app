@@ -4,6 +4,7 @@ import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,12 +22,30 @@ class OrderRepository(
   private var cloudOrders: List<ConfirmedOrder>? = null
   private val pendingLocalOrderNumbers = mutableSetOf<String>()
 
+  /** The active cloud-orders subscription, if any. Kept so it can be restarted. */
+  private var observeJob: Job? = null
+
   init {
     observeCloudOrders()
   }
 
+  /**
+   * (Re)subscribes to the cloud orders feed. This MUST be called after the
+   * admin signs in: the Firestore rules only let a signed-in admin read
+   * orders, so a listener attached before sign-in fails with
+   * PERMISSION_DENIED and the SDK removes it — it never recovers on its
+   * own, even after the auth state changes. Re-subscribing attaches a fresh
+   * listener with the admin's credentials, and orders start appearing.
+   * Safe to call when already subscribed (the old subscription is
+   * cancelled first).
+   */
+  fun refreshOrders() {
+    observeCloudOrders()
+  }
+
   private fun observeCloudOrders() {
-    scope.launch {
+    observeJob?.cancel()
+    observeJob = scope.launch {
       cloudDataSource.observeOrders().collect { snapshot ->
         when (snapshot) {
           is CloudOrdersSnapshot.Loaded -> {
