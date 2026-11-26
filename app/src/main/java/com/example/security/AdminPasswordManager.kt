@@ -2,6 +2,7 @@ package com.example.security
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.security.MessageDigest
@@ -17,39 +18,61 @@ interface PasswordStorage {
   fun saveCredentials(saltBase64: String, hashBase64: String)
 }
 
+/**
+ * Keystore-backed EncryptedSharedPreferences wrapper.
+ * Wraps Keystore / SharedPreferences calls defensively so hardware Keystore anomalies
+ * never crash the app. Should be invoked off the main thread.
+ */
 class EncryptedPasswordStorage(context: Context) : PasswordStorage {
-  private val prefs: SharedPreferences by lazy {
-    val appContext = context.applicationContext
-    val masterKey =
-      MasterKey.Builder(appContext)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-    EncryptedSharedPreferences.create(
-      appContext,
-      PREFS_FILE_NAME,
-      masterKey,
-      EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-      EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+  private val appContext = context.applicationContext
+
+  private val prefs: SharedPreferences? by lazy {
+    runCatching {
+      val masterKey =
+        MasterKey.Builder(appContext)
+          .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+          .build()
+      EncryptedSharedPreferences.create(
+        appContext,
+        PREFS_FILE_NAME,
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+      )
+    }.onFailure { err ->
+      Log.w(TAG, "EncryptedSharedPreferences initialization failed: ${err.message}")
+    }.getOrNull()
   }
 
   override fun hasPassword(): Boolean {
-    return !prefs.getString(KEY_SALT, null).isNullOrBlank() &&
-      !prefs.getString(KEY_HASH, null).isNullOrBlank()
+    return runCatching {
+      val p = prefs ?: return false
+      !p.getString(KEY_SALT, null).isNullOrBlank() &&
+        !p.getString(KEY_HASH, null).isNullOrBlank()
+    }.getOrDefault(false)
   }
 
-  override fun getSaltBase64(): String? = prefs.getString(KEY_SALT, null)
+  override fun getSaltBase64(): String? {
+    return runCatching { prefs?.getString(KEY_SALT, null) }.getOrNull()
+  }
 
-  override fun getHashBase64(): String? = prefs.getString(KEY_HASH, null)
+  override fun getHashBase64(): String? {
+    return runCatching { prefs?.getString(KEY_HASH, null) }.getOrNull()
+  }
 
   override fun saveCredentials(saltBase64: String, hashBase64: String) {
-    prefs.edit()
-      .putString(KEY_SALT, saltBase64)
-      .putString(KEY_HASH, hashBase64)
-      .apply()
+    runCatching {
+      prefs?.edit()
+        ?.putString(KEY_SALT, saltBase64)
+        ?.putString(KEY_HASH, hashBase64)
+        ?.apply()
+    }.onFailure { err ->
+      Log.w(TAG, "Failed saving encrypted password credentials: ${err.message}")
+    }
   }
 
   companion object {
+    private const val TAG = "EncryptedPwStorage"
     private const val PREFS_FILE_NAME = "gharbazar_admin_secure_prefs"
     private const val KEY_SALT = "admin_password_salt"
     private const val KEY_HASH = "admin_password_hash"
@@ -62,7 +85,7 @@ sealed interface PasswordActionResult {
 }
 
 /**
- * Manages the owner-defined Seller / Admin password.
+ * Manages the owner-defined Seller / Admin local password.
  * Stores only a salted PBKDF2-HMAC-SHA256 hash in EncryptedSharedPreferences.
  * Contains no hardcoded password, PIN, default password, or reset backdoor.
  */

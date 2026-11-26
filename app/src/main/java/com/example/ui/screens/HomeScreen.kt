@@ -31,10 +31,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.AddShoppingCart
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.LocalShipping
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.ShoppingCart
@@ -44,6 +46,7 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -51,6 +54,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -75,10 +79,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.CatalogSyncStatus
 import com.example.model.Product
-import com.example.model.ProductCategory
+import com.example.model.ProductCategories
 import com.example.model.SortOption
-import com.example.model.categoryFiltersFor
 import com.example.model.formatPkr
 import com.example.ui.components.CachedProductImage
 import com.example.ui.components.StoreTrustStrip
@@ -91,6 +95,7 @@ fun HomeScreen(
   onSelectCategory: (String) -> Unit,
   onSelectSortOption: (SortOption) -> Unit,
   onResetFilters: () -> Unit,
+  onRetryProducts: () -> Unit,
   onProductClick: (Product) -> Unit,
   onQuickAddToCart: (Product) -> Unit,
   onOpenCart: () -> Unit,
@@ -98,8 +103,7 @@ fun HomeScreen(
   modifier: Modifier = Modifier,
 ) {
   val focusManager = LocalFocusManager.current
-  val cartQuantities =
-    remember(uiState.cartItems) { uiState.cartQuantityByProductId }
+  val cartQuantities = remember(uiState.cartItems) { uiState.cartQuantityByProductId }
 
   LazyVerticalGrid(
     columns = GridCells.Adaptive(minSize = 160.dp),
@@ -142,7 +146,8 @@ fun HomeScreen(
           ) {
             IconButton(
               onClick = { onSearchQueryChange("") },
-              modifier = Modifier.minimumInteractiveComponentSize().testTag("clear_search_button"),
+              modifier =
+                Modifier.minimumInteractiveComponentSize().testTag("clear_search_button"),
             ) {
               Icon(
                 imageVector = Icons.Filled.Close,
@@ -178,8 +183,9 @@ fun HomeScreen(
 
     item(span = { GridItemSpan(maxLineSpan) }, key = "category_row") {
       CategoryFilterRow(
+        categories = uiState.availableCategories,
+        allProducts = uiState.allProducts,
         selectedCategory = uiState.selectedCategory,
-        categories = categoryFiltersFor(uiState.allProducts),
         onSelectCategory = onSelectCategory,
       )
     }
@@ -192,22 +198,42 @@ fun HomeScreen(
       )
     }
 
-    if (uiState.filteredProducts.isEmpty()) {
-      item(span = { GridItemSpan(maxLineSpan) }, key = "empty_search") {
-        EmptySearchState(onResetFilters = onResetFilters)
+    when {
+      uiState.syncStatus is CatalogSyncStatus.Loading && uiState.allProducts.isEmpty() -> {
+        item(span = { GridItemSpan(maxLineSpan) }, key = "loading_products") {
+          LoadingProductsState()
+        }
       }
-    } else {
-      items(
-        items = uiState.filteredProducts,
-        key = { it.id },
-        contentType = { "product_card" },
-      ) { product ->
-        ProductGridCard(
-          product = product,
-          inCartQuantity = cartQuantities[product.id] ?: 0,
-          onClick = { onProductClick(product) },
-          onQuickAdd = { onQuickAddToCart(product) },
-        )
+      uiState.syncStatus is CatalogSyncStatus.Error && uiState.allProducts.isEmpty() -> {
+        item(span = { GridItemSpan(maxLineSpan) }, key = "error_products") {
+          ErrorProductsState(
+            message = uiState.syncStatus.message,
+            onRetry = onRetryProducts,
+          )
+        }
+      }
+      uiState.filteredProducts.isEmpty() -> {
+        item(span = { GridItemSpan(maxLineSpan) }, key = "empty_search") {
+          EmptySearchState(
+            hasCatalogProducts = uiState.allProducts.isNotEmpty(),
+            onResetFilters = onResetFilters,
+            onRetryProducts = onRetryProducts,
+          )
+        }
+      }
+      else -> {
+        items(
+          items = uiState.filteredProducts,
+          key = { it.id },
+          contentType = { "product_card" },
+        ) { product ->
+          ProductGridCard(
+            product = product,
+            inCartQuantity = cartQuantities[product.id] ?: 0,
+            onClick = { onProductClick(product) },
+            onQuickAdd = { onQuickAddToCart(product) },
+          )
+        }
       }
     }
   }
@@ -219,14 +245,13 @@ private fun MarketplaceTopHeader(
   onOpenCart: () -> Unit,
   onOpenSellerAdmin: () -> Unit,
 ) {
-  var menuExpanded by remember { mutableStateOf(false) }
-
   Row(
     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Row(
+      modifier = Modifier.weight(1f),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -249,19 +274,45 @@ private fun MarketplaceTopHeader(
           text = stringResource(R.string.app_name),
           style = MaterialTheme.typography.headlineSmall,
           color = MaterialTheme.colorScheme.onBackground,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
         )
         Text(
           text = stringResource(R.string.tagline_pakistan_cod),
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
         )
       }
     }
+
+    Spacer(modifier = Modifier.width(6.dp))
 
     Row(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+      OutlinedButton(
+        onClick = onOpenSellerAdmin,
+        shape = CircleShape,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.minimumInteractiveComponentSize().testTag("seller_admin_button"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.AdminPanelSettings,
+          contentDescription = "Seller / Admin",
+          modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+          text = "Seller / Admin",
+          style = MaterialTheme.typography.labelMedium,
+          maxLines = 1,
+        )
+      }
+
       Surface(
         onClick = onOpenCart,
         shape = CircleShape,
@@ -289,32 +340,6 @@ private fun MarketplaceTopHeader(
           }
         }
       }
-
-      Box {
-        IconButton(
-          onClick = { menuExpanded = true },
-          modifier = Modifier.minimumInteractiveComponentSize().testTag("home_menu_button"),
-        ) {
-          Icon(
-            imageVector = Icons.Filled.MoreVert,
-            contentDescription = "Store options",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-        DropdownMenu(
-          expanded = menuExpanded,
-          onDismissRequest = { menuExpanded = false },
-        ) {
-          DropdownMenuItem(
-            text = { Text("Seller / Admin") },
-            onClick = {
-              menuExpanded = false
-              onOpenSellerAdmin()
-            },
-            modifier = Modifier.testTag("seller_admin_menu_item"),
-          )
-        }
-      }
     }
   }
 }
@@ -339,9 +364,7 @@ private fun StorePromoBanner(
     shape = MaterialTheme.shapes.large,
     shadowElevation = 2.dp,
   ) {
-    Box(
-      modifier = Modifier.fillMaxWidth().background(bannerGradient).padding(18.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxWidth().background(bannerGradient).padding(18.dp)) {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(
           color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f),
@@ -381,13 +404,13 @@ private fun StorePromoBanner(
         ) {
           BannerCategoryShortcut(
             label = "Shop Blankets",
-            active = selectedCategory == ProductCategory.BLANKETS.label,
-            onClick = { onSelectCategory(ProductCategory.BLANKETS.label) },
+            active = selectedCategory.equals(ProductCategories.BLANKETS, ignoreCase = true),
+            onClick = { onSelectCategory(ProductCategories.BLANKETS) },
           )
           BannerCategoryShortcut(
             label = "Shop Men's Suits",
-            active = selectedCategory == ProductCategory.MENS_SUITS.label,
-            onClick = { onSelectCategory(ProductCategory.MENS_SUITS.label) },
+            active = selectedCategory.equals(ProductCategories.MENS_SUITS, ignoreCase = true),
+            onClick = { onSelectCategory(ProductCategories.MENS_SUITS) },
           )
         }
       }
@@ -408,8 +431,7 @@ private fun BannerCategoryShortcut(
       if (active) MaterialTheme.colorScheme.onPrimary
       else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f),
     contentColor =
-      if (active) MaterialTheme.colorScheme.primary
-      else MaterialTheme.colorScheme.onPrimary,
+      if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimary,
   ) {
     Text(
       text = label,
@@ -422,25 +444,37 @@ private fun BannerCategoryShortcut(
 
 @Composable
 private fun CategoryFilterRow(
+  categories: List<String>,
+  allProducts: List<Product>,
   selectedCategory: String,
-  categories: List<Pair<String, Int>>,
   onSelectCategory: (String) -> Unit,
 ) {
   Row(
     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    categories.forEach { (label, count) ->
-      val isSelected = selectedCategory == label
+    categories.forEach { category ->
+      val count =
+        if (category.equals(ProductCategories.ALL, ignoreCase = true)) {
+          allProducts.size
+        } else {
+          allProducts.count { it.category.equals(category, ignoreCase = true) }
+        }
       val tag =
-        "filter_" + label.lowercase().map { if (it.isLetterOrDigit()) it else '_' }.joinToString("")
+        when (category) {
+          ProductCategories.ALL -> "filter_all"
+          ProductCategories.BLANKETS -> "filter_blankets"
+          ProductCategories.MENS_SUITS -> "filter_mens_suits"
+          else -> "filter_custom_${category.lowercase().replace(" ", "_")}"
+        }
+      val isSelected = selectedCategory.equals(category, ignoreCase = true)
       FilterChip(
         selected = isSelected,
-        onClick = { onSelectCategory(label) },
+        onClick = { onSelectCategory(category) },
         modifier = Modifier.minimumInteractiveComponentSize().testTag(tag),
         label = {
           Text(
-            text = "$label ($count)",
+            text = "$category ($count)",
             style = MaterialTheme.typography.labelLarge,
           )
         },
@@ -560,7 +594,7 @@ private fun ProductGridCard(
       Box(modifier = Modifier.fillMaxWidth().aspectRatio(4f / 3f)) {
         CachedProductImage(
           imageRes = product.imageRes,
-          imageUri = product.imageUri,
+          imageUri = product.coverImageUrl,
           contentDescription = product.name,
           cacheKey = product.id,
           modifier = Modifier.fillMaxSize(),
@@ -575,6 +609,8 @@ private fun ProductGridCard(
             text = product.category,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
           )
         }
@@ -644,7 +680,7 @@ private fun ProductGridCard(
               color = MaterialTheme.colorScheme.primary,
             )
             Text(
-              text = if (product.isAvailable) "Free Delivery" else "Unavailable",
+              text = if (product.isAvailable) "Free Delivery" else "Out of Stock",
               style = MaterialTheme.typography.labelSmall,
               color =
                 if (product.isAvailable) MaterialTheme.colorScheme.tertiary
@@ -682,7 +718,83 @@ private fun ProductGridCard(
 }
 
 @Composable
-private fun EmptySearchState(onResetFilters: () -> Unit) {
+private fun LoadingProductsState() {
+  Card(
+    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+    colors =
+      CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+      ),
+    shape = MaterialTheme.shapes.large,
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(28.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      CircularProgressIndicator(modifier = Modifier.size(36.dp))
+      Text(
+        text = "Loading GharBazar store…",
+        style = MaterialTheme.typography.titleMedium,
+        textAlign = TextAlign.Center,
+      )
+    }
+  }
+}
+
+@Composable
+private fun ErrorProductsState(
+  message: String,
+  onRetry: () -> Unit,
+) {
+  Card(
+    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+    colors =
+      CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+      ),
+    shape = MaterialTheme.shapes.large,
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(28.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Icon(
+        imageVector = Icons.Filled.CloudOff,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.error,
+        modifier = Modifier.size(44.dp),
+      )
+      Text(
+        text = "Could not load products",
+        style = MaterialTheme.typography.titleMedium,
+        textAlign = TextAlign.Center,
+      )
+      Text(
+        text = message,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+      )
+      Button(
+        onClick = onRetry,
+        modifier = Modifier.minimumInteractiveComponentSize().testTag("retry_products_button"),
+      ) {
+        Icon(imageVector = Icons.Filled.Refresh, contentDescription = null)
+        Spacer(modifier = Modifier.width(6.dp))
+        Text("Retry")
+      }
+    }
+  }
+}
+
+@Composable
+private fun EmptySearchState(
+  hasCatalogProducts: Boolean,
+  onResetFilters: () -> Unit,
+  onRetryProducts: () -> Unit,
+) {
   Card(
     modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
     colors =
@@ -703,22 +815,30 @@ private fun EmptySearchState(onResetFilters: () -> Unit) {
         modifier = Modifier.size(48.dp),
       )
       Text(
-        text = stringResource(R.string.empty_search_title),
+        text =
+          if (hasCatalogProducts) stringResource(R.string.empty_search_title)
+          else "No products available yet",
         style = MaterialTheme.typography.titleMedium,
         textAlign = TextAlign.Center,
       )
       Text(
-        text = stringResource(R.string.empty_search_subtitle),
+        text =
+          if (hasCatalogProducts) stringResource(R.string.empty_search_subtitle)
+          else "Please check back soon or tap Refresh to reload the catalogue.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
       )
       Spacer(modifier = Modifier.height(4.dp))
       Button(
-        onClick = onResetFilters,
+        onClick = if (hasCatalogProducts) onResetFilters else onRetryProducts,
         modifier = Modifier.minimumInteractiveComponentSize().testTag("reset_filters_button"),
       ) {
-        Text(text = stringResource(R.string.reset_filters))
+        Text(
+          text =
+            if (hasCatalogProducts) stringResource(R.string.reset_filters)
+            else "Refresh",
+        )
       }
     }
   }

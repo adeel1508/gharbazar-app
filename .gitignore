@@ -16,9 +16,3 @@
 local.properties
 .env
 debug.keystore
-
-# Never commit signing keys
-*.jks
-*.keystore
-
-__pycache__/

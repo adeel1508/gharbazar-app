@@ -1,21 +1,30 @@
 package com.example
 
 import com.example.data.AdminAuthDataSource
+import com.example.data.AdminOrdersLoadState
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
 import com.example.data.CloudOrderDataSource
-import com.example.data.CloudOrdersSnapshot
-import com.example.data.GHARBAZAR_ADMIN_EMAIL
+import com.example.data.CloudProductDataSource
+import com.example.data.CloudProductsSnapshot
+import com.example.data.ImageUploadService
+import com.example.data.ManualUpdateCheckResult
 import com.example.data.OrderRepository
 import com.example.data.ProductCatalog
-import com.example.data.shouldPromptForUpdate
-import com.example.model.CartItem
+import com.example.data.ProductRepository
+import com.example.data.evaluateManualUpdateCheck
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
-import com.example.model.ProductCategory
+import com.example.model.Product
+import com.example.model.ProductCategories
 import com.example.model.SortOption
 import com.example.model.formatPkr
+import com.example.security.AdminPasswordManager
 import com.example.security.PasswordActionResult
+import com.example.security.PasswordStorage
+import com.example.viewmodel.ManualUpdateDialogState
+import com.example.viewmodel.OrderSyncState
+import com.example.viewmodel.PickedPhotoStatus
 import com.example.viewmodel.StoreViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +32,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -52,12 +60,25 @@ class MainDispatcherRule(
   }
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class StoreViewModelTest {
 
   @get:Rule val mainDispatcherRule = MainDispatcherRule()
 
+  private fun createTestProductRepository(
+    products: List<Product> = ProductCatalog.products,
+  ): Pair<ProductRepository, FakeCloudProducts> {
+    val cloud = FakeCloudProducts(products)
+    val repo =
+      ProductRepository(
+        cloudDataSource = cloud,
+        scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+      )
+    return repo to cloud
+  }
+
   @Test
-  fun catalog_hasExactEightProductsAndExactPkrPrices() {
+  fun catalogFixtures_haveExpectedPricesAndCategories() {
     val products = ProductCatalog.products
     assertEquals(8, products.size)
 
@@ -85,16 +106,35 @@ class StoreViewModelTest {
   }
 
   @Test
-  fun searchCategoryAndSort_filterAndSortAccurately() {
-    val vm = StoreViewModel()
+  fun searchCategoryAndSort_filterAndSortAccuratelyIncludingCustomCategories() {
+    val customProduct =
+      ProductCatalog.products[0].copy(
+        id = "custom_shawl_1",
+        name = "Pashmina Winter Shawl",
+        pricePkr = 3200,
+        category = "Winter Shawls",
+        fabric = "Pashmina",
+      )
+    val (repo, _) = createTestProductRepository(ProductCatalog.products + customProduct)
+    val vm =
+      StoreViewModel(
+        repository = repo,
+        ioDispatcher = UnconfinedTestDispatcher(),
+      )
 
-    vm.selectCategory(ProductCategory.BLANKETS.label)
-    assertEquals(4, vm.uiState.value.filteredProducts.size)
-    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.BLANKETS.label })
+    assertTrue(vm.uiState.value.availableCategories.contains("Winter Shawls"))
 
-    vm.selectCategory(ProductCategory.MENS_SUITS.label)
+    vm.selectCategory(ProductCategories.BLANKETS)
     assertEquals(4, vm.uiState.value.filteredProducts.size)
-    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategory.MENS_SUITS.label })
+    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategories.BLANKETS })
+
+    vm.selectCategory("Winter Shawls")
+    assertEquals(1, vm.uiState.value.filteredProducts.size)
+    assertEquals("Pashmina Winter Shawl", vm.uiState.value.filteredProducts.first().name)
+
+    vm.selectCategory(ProductCategories.MENS_SUITS)
+    assertEquals(4, vm.uiState.value.filteredProducts.size)
+    assertTrue(vm.uiState.value.filteredProducts.all { it.category == ProductCategories.MENS_SUITS })
 
     vm.updateSortOption(SortOption.PRICE_HIGH_LOW)
     assertEquals(3099, vm.uiState.value.filteredProducts.first().pricePkr)
@@ -103,19 +143,20 @@ class StoreViewModelTest {
     vm.updateSortOption(SortOption.PRICE_LOW_HIGH)
     assertEquals(1999, vm.uiState.value.filteredProducts.first().pricePkr)
 
-    vm.selectCategory(ProductCategory.ALL.label)
+    vm.selectCategory(ProductCategories.ALL)
     vm.updateSearchQuery("Boski")
     assertEquals(1, vm.uiState.value.filteredProducts.size)
     assertEquals("Men's Unstitched Boski Plain Suit", vm.uiState.value.filteredProducts.first().name)
 
     vm.resetFilters()
-    assertEquals(8, vm.uiState.value.filteredProducts.size)
+    assertEquals(9, vm.uiState.value.filteredProducts.size)
     assertEquals(SortOption.FEATURED, vm.uiState.value.sortOption)
   }
 
   @Test
   fun cartOperations_updateTotalQuantitiesAndMap() {
-    val vm = StoreViewModel()
+    val (repo, _) = createTestProductRepository()
+    val vm = StoreViewModel(repository = repo, ioDispatcher = UnconfinedTestDispatcher())
     val blanket = ProductCatalog.products[0] // Rs 1,949
     val suit = ProductCatalog.products[4] // Rs 1,999
 
@@ -145,7 +186,8 @@ class StoreViewModelTest {
 
   @Test
   fun checkoutValidation_andOrderPlacement_clearsCartAndGeneratesUniqueOrderNumber() {
-    val vm = StoreViewModel()
+    val (repo, _) = createTestProductRepository()
+    val vm = StoreViewModel(repository = repo, ioDispatcher = UnconfinedTestDispatcher())
 
     assertFalse(vm.placeOrder())
 
@@ -190,384 +232,270 @@ class StoreViewModelTest {
   }
 
   @Test
-  fun adminAuthAndProductCrud_updatesCustomerCatalogAndCartImmediately() {
-    val vm = StoreViewModel()
+  fun ordersRefreshOnlyOnOrdersTabOpenOrRefreshTap_neverOnStartupOrAuthChange() {
+    val cloudOrders =
+      FakeCloudOrders(
+        ordersToReturn =
+          listOf(
+            ConfirmedOrder(
+              orderNumber = "GB-641124",
+              customerName = "Zainab Tariq",
+              phoneNumber = "03001112233",
+              deliveryAddress = "House 12, Gulberg",
+              city = "Lahore",
+              items = emptyList(),
+              totalPkr = 1949,
+              timestampMillis = 1775044800000L,
+            )
+          )
+      )
+    val fakeAuth = FakeAdminAuth()
+    val (repo, _) = createTestProductRepository()
+    val orderRepo = OrderRepository(cloudOrders)
 
-    // First run: no admin password set
-    assertFalse(vm.uiState.value.isAdminPasswordSet)
-    assertFalse(vm.uiState.value.isAdminUnlocked)
+    val vm =
+      StoreViewModel(
+        repository = repo,
+        passwordManager = AdminPasswordManager(FakePasswordStorage()),
+        orderRepository = orderRepo,
+        adminAuthDataSource = fakeAuth,
+        ioDispatcher = UnconfinedTestDispatcher(),
+      )
 
-    // Setup owner password
-    assertEquals(
-      PasswordActionResult.Success,
-      vm.setupAdminPassword("OwnerPass99", "OwnerPass99"),
-    )
-    assertTrue(vm.uiState.value.isAdminPasswordSet)
+    // Startup: 0 orders fetches
+    assertEquals(0, cloudOrders.fetchCount)
+    assertEquals(AdminOrdersLoadState.Idle, vm.uiState.value.adminOrdersState)
+
+    // Opening Admin entry & Cloud Sign-In (step 1): 0 orders fetches
+    vm.prepareAdminEntry()
+    vm.signInAdminCloud("adeel.arif0786@gmail.com", "secret")
+    assertEquals("adeel.arif0786@gmail.com", vm.uiState.value.cloudAdminEmail)
+    assertEquals(0, cloudOrders.fetchCount)
+
+    // Setting up / unlocking local password (step 2): STILL 0 orders fetches
+    assertEquals(PasswordActionResult.Success, vm.setupAdminPassword("OwnerPass99", "OwnerPass99"))
     assertTrue(vm.uiState.value.isAdminUnlocked)
+    assertEquals(0, cloudOrders.fetchCount)
 
-    // Lock and test unlock
-    vm.lockAdmin()
-    assertFalse(vm.uiState.value.isAdminUnlocked)
-    assertFalse(vm.unlockAdmin("WrongPassword"))
-    assertFalse(vm.uiState.value.isAdminUnlocked)
+    // Auth sign-out: 0 orders fetches
+    vm.signOutAdminCloud()
+    assertEquals(0, cloudOrders.fetchCount)
+
+    // Sign back in and unlock
+    vm.signInAdminCloud("adeel.arif0786@gmail.com", "secret")
     assertTrue(vm.unlockAdmin("OwnerPass99"))
-    assertTrue(vm.uiState.value.isAdminUnlocked)
+    assertEquals(0, cloudOrders.fetchCount)
 
-    // Admin adds a new product -> appears in customer catalog immediately
-    vm.saveAdminProduct(
-      editingProductId = null,
-      name = "Men's Unstitched Karandi Suit",
-      pricePkr = 2750,
-      category = ProductCategory.MENS_SUITS.label,
-      fabric = "Karandi",
-      size = "4.5 meter cutting",
-      description = "Warm textured winter Karandi suit.",
-      imageKey = "suit_wool_brown",
-      imageUri = null,
-      inStock = true,
-      stockQuantity = 12,
-    )
-    assertEquals(9, vm.uiState.value.allProducts.size)
-    val added = vm.uiState.value.allProducts.find { it.name == "Men's Unstitched Karandi Suit" }
-    assertNotNull(added)
+    // Opening Orders tab -> triggers 1 fetch
+    vm.onAdminOrdersTabOpened()
+    assertEquals(1, cloudOrders.fetchCount)
+    assertEquals(1, vm.uiState.value.loadedAdminOrdersCount)
 
-    // Add it to cart, then edit its price in Admin -> cart & store update immediately
-    vm.addToCart(added!!)
-    assertEquals(2750, vm.uiState.value.cartTotalPkr)
-
-    vm.saveAdminProduct(
-      editingProductId = added.id,
-      name = "Men's Unstitched Karandi Suit",
-      pricePkr = 2499,
-      category = ProductCategory.MENS_SUITS.label,
-      fabric = "Karandi",
-      size = "4.5 meter cutting",
-      description = "Updated price winter Karandi suit.",
-      imageKey = "suit_wool_brown",
-      imageUri = null,
-      inStock = true,
-      stockQuantity = 10,
-    )
-    assertEquals(2499, vm.getProductById(added.id)?.pricePkr)
-    assertEquals(2499, vm.uiState.value.cartTotalPkr)
-
-    // Marking out of stock removes it from cart and blocks adding
-    vm.saveAdminProduct(
-      editingProductId = added.id,
-      name = "Men's Unstitched Karandi Suit",
-      pricePkr = 2499,
-      category = ProductCategory.MENS_SUITS.label,
-      fabric = "Karandi",
-      size = "4.5 meter cutting",
-      description = "Sold out",
-      imageKey = "suit_wool_brown",
-      imageUri = null,
-      inStock = false,
-      stockQuantity = 0,
-    )
-    assertEquals(0, vm.uiState.value.cartItemCount)
-    vm.addToCart(vm.getProductById(added.id)!!)
-    assertEquals(0, vm.uiState.value.cartItemCount)
-
-    // Delete product -> returns catalog to 8
-    vm.deleteAdminProduct(added.id)
-    assertEquals(8, vm.uiState.value.allProducts.size)
-    assertNull(vm.getProductById(added.id))
+    // Tapping Refresh -> triggers 2nd fetch
+    vm.refreshAdminOrders()
+    assertEquals(2, cloudOrders.fetchCount)
   }
 
-  @OptIn(ExperimentalCoroutinesApi::class)
   @Test
-  fun placeOrder_succeedsEvenWhenFirestoreSaveFails_andAdminCanUpdateOrderStatus() {
-    val failingCloudOrders =
-      object : CloudOrderDataSource {
-        override val isConfigured: Boolean = true
-        private val flow = MutableStateFlow<CloudOrdersSnapshot>(CloudOrdersSnapshot.Empty)
-        val savedNumbers = mutableListOf<String>()
-        val statusUpdates = mutableListOf<Pair<String, OrderStatus>>()
+  fun contentUriIsNeverSavedByAdminSaveProduct_andPickedCloudinaryUrlsAreCombinedFirst() {
+    val (repo, cloudProducts) = createTestProductRepository()
+    val vm =
+      StoreViewModel(
+        repository = repo,
+        imageUploadService =
+          object : ImageUploadService {
+            override suspend fun uploadGalleryUri(localUriString: String): Result<String> {
+              return Result.success("https://res.cloudinary.com/mlfzivam/image/upload/v123/picked.jpg")
+            }
+          },
+        ioDispatcher = UnconfinedTestDispatcher(),
+      )
 
-        override fun observeOrders(): Flow<CloudOrdersSnapshot> = flow
+    vm.startPickedPhotoUpload("content://media/external/images/media/44")
+    val picked = vm.uiState.value.pickedPhotos.single()
+    assertTrue(picked.status is PickedPhotoStatus.Uploaded)
+    val uploadedUrl = (picked.status as PickedPhotoStatus.Uploaded).secureUrl
 
-        override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> {
-          savedNumbers.add(order.orderNumber)
-          return Result.failure(RuntimeException("Network timeout"))
-        }
+    vm.saveAdminProduct(
+      editingProductId = null,
+      name = "Luxury Mink Blanket",
+      pricePkr = 4500,
+      category = "Winter Throws",
+      fabric = "Mink",
+      size = "Double Bed",
+      description = "Soft embossed blanket",
+      imageKey = "blanket_plain_blue",
+      typedImageUrls =
+        listOf(
+          "content://media/external/images/media/999", // must be stripped!
+          "https://res.cloudinary.com/mlfzivam/image/upload/v123/typed.jpg",
+        ),
+      uploadedImageUrls = listOf(uploadedUrl),
+      inStock = true,
+      stockQuantity = 15,
+    )
 
-        override suspend fun updateOrderStatus(
-          orderNumber: String,
-          status: OrderStatus,
-        ): Result<Unit> {
-          statusUpdates.add(orderNumber to status)
-          return Result.success(Unit)
+    val saved = cloudProducts.upsertedProducts.last()
+    assertEquals("Winter Throws", saved.category)
+    assertFalse(saved.imageUris.any { it.startsWith("content://") })
+    assertEquals(
+      listOf(
+        "https://res.cloudinary.com/mlfzivam/image/upload/v123/picked.jpg",
+        "https://res.cloudinary.com/mlfzivam/image/upload/v123/typed.jpg",
+      ),
+      saved.imageUris,
+    )
+    assertEquals("https://res.cloudinary.com/mlfzivam/image/upload/v123/picked.jpg", saved.imageUri)
+  }
+
+  @Test
+  fun updateCheck_neverRunsOnLaunch_andRunsOnlyOnManualTap() {
+    var checkCallCount = 0
+    val manualUpdateSource =
+      object : AppUpdateDataSource {
+        override suspend fun checkForUpdate(currentVersionCode: Int): Result<ManualUpdateCheckResult> {
+          checkCallCount++
+          return Result.success(
+            ManualUpdateCheckResult.UpdateAvailable(
+              AppUpdateInfo(
+                latestVersionCode = 5,
+                apkUrl = "https://gharbazar.pk/gharbazar-v5.apk",
+              )
+            )
+          )
         }
       }
 
-    val orderRepo =
-      OrderRepository(
-        cloudDataSource = failingCloudOrders,
-        scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+    val (repo, _) = createTestProductRepository()
+    val vm =
+      StoreViewModel(
+        repository = repo,
+        appUpdateDataSource = manualUpdateSource,
+        currentVersionCode = 1,
+        ioDispatcher = UnconfinedTestDispatcher(),
       )
-    val vm = StoreViewModel(orderRepository = orderRepo)
 
-    val item = ProductCatalog.products[0]
-    vm.addToCart(item, quantity = 2)
+    // Launch must NOT run update check or show any dialog
+    assertEquals(0, checkCallCount)
+    assertNull(vm.uiState.value.manualUpdateDialogState)
+
+    // Manual tap inside Admin triggers the check
+    vm.checkForUpdatesManually()
+    assertEquals(1, checkCallCount)
+    val state = vm.uiState.value.manualUpdateDialogState
+    assertTrue(state is ManualUpdateDialogState.Available)
+    assertEquals(5, (state as ManualUpdateDialogState.Available).info.latestVersionCode)
+
+    vm.dismissManualUpdateDialog()
+    assertNull(vm.uiState.value.manualUpdateDialogState)
+
+    // Pure evaluation checks
+    assertEquals(
+      ManualUpdateCheckResult.UpToDate,
+      evaluateManualUpdateCheck(1, "https://gharbazar.pk/app.apk", currentVersionCode = 1),
+    )
+    assertEquals(
+      ManualUpdateCheckResult.UpToDate,
+      evaluateManualUpdateCheck(5, "", currentVersionCode = 1),
+    )
+  }
+
+  @Test
+  fun placeOrder_succeedsLocallyEvenWhenCloudSaveFails_andRetryWorks() {
+    val cloudOrders = FakeCloudOrders(failNextSave = true)
+    val (repo, _) = createTestProductRepository()
+    val vm =
+      StoreViewModel(
+        repository = repo,
+        orderRepository = OrderRepository(cloudOrders),
+        ioDispatcher = UnconfinedTestDispatcher(),
+      )
+
+    vm.addToCart(ProductCatalog.products[0], quantity = 2)
     vm.updateCustomerName("Sadia Bibi")
     vm.updatePhoneNumber("03017654321")
     vm.updateDeliveryAddress("House 9, Askari 11")
     vm.updateCity("Rawalpindi")
 
-    // Checkout must succeed locally immediately even when cloud save returns failure
-    val placed = vm.placeOrder()
-    assertTrue(placed)
+    assertTrue(vm.placeOrder())
     assertTrue(vm.uiState.value.cartItems.isEmpty())
+    assertNotNull(vm.uiState.value.lastConfirmedOrder)
+    assertTrue(vm.uiState.value.orderSyncState is OrderSyncState.Failed)
 
-    val confirmed = vm.uiState.value.lastConfirmedOrder
-    assertNotNull(confirmed)
-    assertEquals(OrderStatus.PLACED, confirmed!!.status)
-    assertTrue(confirmed.timestamp > 0L)
-    assertEquals(listOf(confirmed.orderNumber), failingCloudOrders.savedNumbers)
-
-    // Order appears in adminOrders and admin can advance its status
-    assertEquals(1, vm.uiState.value.adminOrders.size)
-    vm.updateAdminOrderStatus(confirmed.orderNumber, OrderStatus.CONFIRMED)
-    assertEquals(OrderStatus.CONFIRMED, vm.uiState.value.adminOrders.first().status)
-    assertEquals(
-      listOf(confirmed.orderNumber to OrderStatus.CONFIRMED),
-      failingCloudOrders.statusUpdates,
-    )
+    // Retry when network recovers
+    cloudOrders.failNextSave = false
+    vm.retryOrderSync()
+    assertEquals(OrderSyncState.Saved, vm.uiState.value.orderSyncState)
   }
 
-  @Test
-  fun authStateChange_doesNotRefreshOrders() {
-    // REGRESSION GUARD for the v1.0.12 crash: that design called
-    // orderRepository.refreshOrders() from the authState collector, so
-    // every sign-in (including the restored session at startup) re-
-    // subscribed — and the app started crashing on launch after admin
-    // sign-in. The redesigned flow refreshes orders ONLY when the admin
-    // opens the Orders tab or taps its Refresh button, so an auth-state
-    // change on its own must never touch the orders subscription.
-    val (vm, flakyCloud, fakeAuth) = flakyOrdersViewModel()
+  private class FakeCloudProducts(initial: List<Product>) : CloudProductDataSource {
+    override val isConfigured: Boolean = true
+    private val flow =
+      MutableStateFlow<CloudProductsSnapshot>(
+        CloudProductsSnapshot.Loaded(initial, isFromCache = false)
+      )
+    val upsertedProducts = mutableListOf<Product>()
 
-    // First subscription died with PERMISSION_DENIED: no orders.
-    assertTrue(vm.uiState.value.adminOrders.isEmpty())
-    assertEquals(1, flakyCloud.subscriptions)
+    override fun observeProducts(): Flow<CloudProductsSnapshot> = flow
 
-    // Sign-in: the UI state updates, but no re-subscribe happens.
-    fakeAuth.emitSignedIn(true)
-    assertTrue(vm.uiState.value.isAdminSignedIn)
-    assertEquals(1, flakyCloud.subscriptions)
-    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+    override suspend fun fetchProductsOnce(): CloudProductsSnapshot = flow.value
 
-    // Sign-out: still no re-subscribe.
-    fakeAuth.emitSignedIn(false)
-    assertFalse(vm.uiState.value.isAdminSignedIn)
-    assertEquals(1, flakyCloud.subscriptions)
-    assertTrue(vm.uiState.value.adminOrders.isEmpty())
+    override suspend fun upsertProduct(product: Product): Result<Unit> {
+      upsertedProducts.add(product)
+      return Result.success(Unit)
+    }
+
+    override suspend fun deleteProduct(productId: String): Result<Unit> = Result.success(Unit)
   }
 
-  @Test
-  fun refreshAdminOrders_recoversOrdersAfterInitialPermissionDenied() {
-    // The explicit, user-triggered path (Orders tab opened / Refresh
-    // button tapped) re-subscribes and recovers the orders that the
-    // pre-sign-in listener never delivered.
-    val (vm, flakyCloud, _) = flakyOrdersViewModel()
-
-    assertTrue(vm.uiState.value.adminOrders.isEmpty())
-    assertEquals(1, flakyCloud.subscriptions)
-
-    vm.refreshAdminOrders()
-
-    assertEquals(2, flakyCloud.subscriptions)
-    assertEquals(listOf("GB-641124"), vm.uiState.value.adminOrders.map { it.orderNumber })
-  }
-
-  /**
-   * A ViewModel whose orders feed dies with PERMISSION_DENIED on its
-   * first subscription (listener attached before admin sign-in) and goes
-   * live on later ones — the live "0 orders" race, in test form.
-   */
-  private fun flakyOrdersViewModel():
-    Triple<StoreViewModel, FlakyCloudOrderDataSource, FakeControllableAdminAuth> {
-    val liveOrder =
-      ConfirmedOrder(
-        orderNumber = "GB-641124",
-        customerName = "Farzi Test",
-        phoneNumber = "03001234567",
-        deliveryAddress = "Test Address, Gulzar Colony",
-        city = "Lahore",
-        items = listOf(CartItem(ProductCatalog.products[0], 1)),
-        totalPkr = 1949,
-        timestamp = 1764000000000L,
-        status = OrderStatus.PLACED,
-      )
-    val flakyCloud = FlakyCloudOrderDataSource(liveOrder)
-    val orderRepo =
-      OrderRepository(
-        flakyCloud,
-        scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
-      )
-    val fakeAuth = FakeControllableAdminAuth()
-    val vm = StoreViewModel(orderRepository = orderRepo, adminAuth = fakeAuth)
-    return Triple(vm, flakyCloud, fakeAuth)
-  }
-
-  @Test
-  fun updateCheck_promptsOnlyWhenNewerVersionAndUrlExist_andDismissesCleanly() {
-    val newerUpdateSource =
-      object : AppUpdateDataSource {
-        override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo {
-          return AppUpdateInfo(
-            latestVersionCode = 2,
-            apkUrl = "https://gharbazar.pk/app-release.apk",
-          )
-        }
-      }
-
-    val vm =
-      StoreViewModel(
-        appUpdateDataSource = newerUpdateSource,
-        currentVersionCode = 1,
-      )
-
-    // No automatic check at startup: nothing is prompted on launch.
-    assertNull(vm.uiState.value.availableUpdate)
-
-    // The manual check (admin "Check for Updates" button) prompts.
-    vm.checkForUpdates()
-
-    val available = vm.uiState.value.availableUpdate
-    assertNotNull(available)
-    assertEquals(2, available?.latestVersionCode)
-    assertEquals("https://gharbazar.pk/app-release.apk", available?.apkUrl)
-
-    vm.dismissUpdateDialog()
-    assertNull(vm.uiState.value.availableUpdate)
-  }
-
-  @Test
-  fun updateCheck_ignoresSameVersionEmptyUrlMissingOrFailingDoc() {
-    // Same version -> no prompt
-    assertNull(
-      shouldPromptForUpdate(
-        AppUpdateInfo(latestVersionCode = 1, apkUrl = "https://gharbazar.pk/app.apk"),
-        currentVersionCode = 1,
-      )
-    )
-    // Empty URL -> no prompt
-    assertNull(
-      shouldPromptForUpdate(
-        AppUpdateInfo(latestVersionCode = 5, apkUrl = ""),
-        currentVersionCode = 1,
-      )
-    )
-
-    // Failing data source -> app runs normally with no dialog
-    val failingSource =
-      object : AppUpdateDataSource {
-        override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo? {
-          throw IllegalStateException("Firestore unreachable")
-        }
-      }
-    val vm =
-      StoreViewModel(
-        appUpdateDataSource = failingSource,
-        currentVersionCode = 1,
-      )
-
-    // No automatic check at startup.
-    assertNull(vm.uiState.value.availableUpdate)
-
-    // Even the manual check must not prompt when the fetch fails.
-    vm.checkForUpdates()
-    assertNull(vm.uiState.value.availableUpdate)
-    assertEquals("Could not check for updates. Please try again.", vm.uiState.value.adminNotice)
-    assertEquals(8, vm.uiState.value.allProducts.size)
-  }
-
-  @Test
-  fun updateCheck_doesNotRunAutomaticallyAtStartup_onlyOnManualCheck() {
-    // REGRESSION GUARD for the v1.0.14 crash: the automatic update check
-    // ran at launch and the "Update available" dialog popped up on its own
-    // whenever an update was pending — and the app crashed. The check must
-    // now run ONLY when the admin taps "Check for Updates".
+  private class FakeCloudOrders(
+    private val ordersToReturn: List<ConfirmedOrder> = emptyList(),
+    var failNextSave: Boolean = false,
+  ) : CloudOrderDataSource {
+    override val isConfigured: Boolean = true
     var fetchCount = 0
-    val countingSource =
-      object : AppUpdateDataSource {
-        override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo {
-          fetchCount++
-          return AppUpdateInfo(
-            latestVersionCode = 2,
-            apkUrl = "https://gharbazar.pk/app-release.apk",
-          )
-        }
+
+    override suspend fun fetchOrders(): Result<List<ConfirmedOrder>> {
+      fetchCount++
+      return Result.success(ordersToReturn)
+    }
+
+    override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> {
+      return if (failNextSave) {
+        Result.failure(RuntimeException("Network timeout"))
+      } else {
+        Result.success(Unit)
       }
-    val vm =
-      StoreViewModel(
-        appUpdateDataSource = countingSource,
-        currentVersionCode = 1,
-      )
+    }
 
-    // Startup alone must never fetch update info.
-    assertEquals(0, fetchCount)
-    assertNull(vm.uiState.value.availableUpdate)
-
-    // The manual check fetches exactly once and prompts.
-    vm.checkForUpdates()
-    assertEquals(1, fetchCount)
-    assertNotNull(vm.uiState.value.availableUpdate)
-  }
-}
-
-/**
- * Simulates the live sign-in race: the FIRST orders subscription fails
- * with PERMISSION_DENIED (listener attached before the admin signed in)
- * and never emits again; later subscriptions get the live feed.
- */
-private class FlakyCloudOrderDataSource(
-  private val order: ConfirmedOrder,
-) : CloudOrderDataSource {
-  override val isConfigured: Boolean = true
-  var subscriptions = 0
-  private val snapshots =
-    MutableStateFlow<CloudOrdersSnapshot>(
-      CloudOrdersSnapshot.Loaded(listOf(order), false)
-    )
-
-  override fun observeOrders(): Flow<CloudOrdersSnapshot> {
-    subscriptions++
-    return if (subscriptions == 1) {
-      flowOf(CloudOrdersSnapshot.Unavailable("PERMISSION_DENIED"))
-    } else {
-      snapshots
+    override suspend fun updateOrderStatus(documentId: String, status: OrderStatus): Result<Unit> {
+      return Result.success(Unit)
     }
   }
 
-  override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> =
-    Result.success(Unit)
+  private class FakeAdminAuth : AdminAuthDataSource {
+    private var email: String? = null
+    override fun currentUserEmail(): String? = email
 
-  override suspend fun updateOrderStatus(
-    orderNumber: String,
-    status: OrderStatus,
-  ): Result<Unit> = Result.success(Unit)
-}
+    override suspend fun signIn(email: String, password: String): Result<String> {
+      this.email = email.trim()
+      return Result.success(email.trim())
+    }
 
-/** Admin auth whose signed-in state the test drives by hand. */
-private class FakeControllableAdminAuth : AdminAuthDataSource {
-  override val adminEmail: String = GHARBAZAR_ADMIN_EMAIL
-  override val isSignedIn: Boolean
-    get() = _authState.value
-  private val _authState = MutableStateFlow(false)
-  override val authState: Flow<Boolean> = _authState
-
-  fun emitSignedIn(signedIn: Boolean) {
-    _authState.value = signedIn
+    override fun signOut() {
+      email = null
+    }
   }
 
-  override suspend fun signIn(password: String): Result<Unit> {
-    _authState.value = true
-    return Result.success(Unit)
-  }
-
-  override fun signOut() {
-    _authState.value = false
+  private class FakePasswordStorage : PasswordStorage {
+    private var salt: String? = null
+    private var hash: String? = null
+    override fun hasPassword(): Boolean = !salt.isNullOrBlank() && !hash.isNullOrBlank()
+    override fun getSaltBase64(): String? = salt
+    override fun getHashBase64(): String? = hash
+    override fun saveCredentials(saltBase64: String, hashBase64: String) {
+      salt = saltBase64
+      hash = hashBase64
+    }
   }
 }

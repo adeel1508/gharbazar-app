@@ -184,7 +184,7 @@ private fun CartItemCard(
     ) {
       CachedProductImage(
         imageRes = item.product.imageRes,
-        imageUri = item.product.imageUri,
+        imageUri = item.product.coverImageUrl,
         contentDescription = item.product.name,
         cacheKey = item.product.id,
         modifier =

@@ -5,8 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -24,6 +22,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -255,7 +255,7 @@ fun ProductDetailScreen(
               .padding(24.dp),
           horizontalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-          ProductHeroPhoto(
+          ProductSwipeableGallery(
             product = product,
             modifier = Modifier.weight(1f),
           )
@@ -272,7 +272,7 @@ fun ProductDetailScreen(
               .padding(horizontal = 16.dp, vertical = 8.dp),
           verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-          ProductHeroPhoto(product = product, modifier = Modifier.fillMaxWidth())
+          ProductSwipeableGallery(product = product, modifier = Modifier.fillMaxWidth())
           ProductDetailInfoColumn(product = product, modifier = Modifier.fillMaxWidth())
           Spacer(modifier = Modifier.height(12.dp))
         }
@@ -282,101 +282,114 @@ fun ProductDetailScreen(
 }
 
 @Composable
-private fun ProductHeroPhoto(product: Product, modifier: Modifier = Modifier) {
-  val photos = remember(product) { product.galleryPhotos() }
-  if (photos.size <= 1) {
-    Surface(
-      modifier = modifier.aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
-      shape = MaterialTheme.shapes.large,
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-      shadowElevation = 2.dp,
-    ) {
-      CachedProductImage(
-        imageRes = product.imageRes,
-        imageUri = product.imageUri,
-        contentDescription = product.name,
-        cacheKey = product.id,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
-      )
-    }
-    return
+private fun ProductSwipeableGallery(
+  product: Product,
+  modifier: Modifier = Modifier,
+) {
+  val remoteUrls = remember(product.id, product.imageUris, product.imageUri) {
+    product.galleryImageUrls
   }
+  val pageModels: List<String?> = remember(remoteUrls) {
+    if (remoteUrls.isNotEmpty()) remoteUrls else listOf(null)
+  }
+  val pagerState = rememberPagerState(pageCount = { pageModels.size })
+  val scope = rememberCoroutineScope()
 
-  // Swipeable gallery: one photo per page, dots + tappable thumbnails.
-  // The home screen still shows only the cover (first) photo.
-  val pagerState = rememberPagerState(pageCount = { photos.size })
-  val coroutineScope = rememberCoroutineScope()
-  Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+  Column(
+    modifier = modifier,
+    verticalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
     Surface(
-      modifier =
-        Modifier.fillMaxWidth().aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
+      modifier = Modifier.fillMaxWidth().aspectRatio(4f / 3f).clip(MaterialTheme.shapes.large),
       shape = MaterialTheme.shapes.large,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
       shadowElevation = 2.dp,
     ) {
-      HorizontalPager(
-        state = pagerState,
-        modifier = Modifier.fillMaxSize().testTag("detail_gallery_pager"),
-      ) { page ->
-        CachedProductImage(
-          imageRes = product.imageRes,
-          imageUri = photos[page],
-          contentDescription = "${product.name} photo ${page + 1} of ${photos.size}",
-          cacheKey = "${product.id}:photo:$page",
-          modifier = Modifier.fillMaxSize(),
-          contentScale = ContentScale.Crop,
-        )
-      }
-    }
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.Center,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      photos.indices.forEach { index ->
-        val selected = pagerState.currentPage == index
-        Box(
-          modifier =
-            Modifier.padding(horizontal = 3.dp)
-              .size(if (selected) 10.dp else 8.dp)
-              .clip(CircleShape)
-              .background(
-                if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.outlineVariant
-              )
-              .testTag("detail_gallery_dot_$index"),
-        )
-      }
-    }
-    Row(
-      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      photos.forEachIndexed { index, uri ->
-        val selected = pagerState.currentPage == index
-        Box(
-          modifier =
-            Modifier.size(64.dp)
-              .clip(MaterialTheme.shapes.small)
-              .border(
-                width = if (selected) 2.dp else 1.dp,
-                color =
-                  if (selected) MaterialTheme.colorScheme.primary
-                  else MaterialTheme.colorScheme.outlineVariant,
-                shape = MaterialTheme.shapes.small,
-              )
-              .clickable { coroutineScope.launch { pagerState.scrollToPage(index) } }
-              .testTag("detail_gallery_thumb_$index"),
-        ) {
+      Box(modifier = Modifier.fillMaxSize()) {
+        HorizontalPager(
+          state = pagerState,
+          modifier = Modifier.fillMaxSize().testTag("detail_photo_pager"),
+        ) { page ->
+          val url = pageModels[page]
           CachedProductImage(
             imageRes = product.imageRes,
-            imageUri = uri,
-            contentDescription = "${product.name} thumbnail ${index + 1}",
-            cacheKey = "${product.id}:thumb:$index",
+            imageUri = url,
+            contentDescription = "${product.name} photo ${page + 1}",
+            cacheKey = "${product.id}_$page",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
           )
+        }
+
+        if (pageModels.size > 1) {
+          Surface(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            shape = CircleShape,
+          ) {
+            Text(
+              text = "${pagerState.currentPage + 1} / ${pageModels.size}",
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = FontWeight.SemiBold,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+          }
+        }
+      }
+    }
+
+    if (pageModels.size > 1) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        pageModels.forEachIndexed { index, _ ->
+          val selected = pagerState.currentPage == index
+          Box(
+            modifier =
+              Modifier.padding(horizontal = 4.dp)
+                .size(if (selected) 10.dp else 7.dp)
+                .clip(CircleShape)
+                .background(
+                  if (selected) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.outlineVariant
+                )
+          )
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        pageModels.forEachIndexed { index, url ->
+          val selected = pagerState.currentPage == index
+          Box(
+            modifier =
+              Modifier.size(64.dp)
+                .clip(MaterialTheme.shapes.small)
+                .border(
+                  width = if (selected) 2.5.dp else 1.dp,
+                  color =
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outlineVariant,
+                  shape = MaterialTheme.shapes.small,
+                )
+                .clickable {
+                  scope.launch { pagerState.animateScrollToPage(index) }
+                }
+                .testTag("detail_thumbnail_$index"),
+          ) {
+            CachedProductImage(
+              imageRes = product.imageRes,
+              imageUri = url,
+              contentDescription = "Thumbnail ${index + 1}",
+              cacheKey = "${product.id}_thumb_$index",
+              modifier = Modifier.fillMaxSize(),
+              contentScale = ContentScale.Crop,
+            )
+          }
         }
       }
     }

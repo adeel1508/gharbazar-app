@@ -1,7 +1,5 @@
 package com.example.ui
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -14,14 +12,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Storefront
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.outlined.LocalShipping
 import androidx.compose.material.icons.outlined.ShoppingCart
 import androidx.compose.material.icons.outlined.Storefront
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -34,7 +29,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -217,6 +211,7 @@ fun GharBazarApp() {
               onSelectCategory = viewModel::selectCategory,
               onSelectSortOption = viewModel::updateSortOption,
               onResetFilters = viewModel::resetFilters,
+              onRetryProducts = viewModel::retryLoadProducts,
               onProductClick = { product ->
                 navController.navigate(StoreRoutes.productDetail(product.id))
               },
@@ -226,7 +221,7 @@ fun GharBazarApp() {
               },
               onOpenCart = { navigateToTab(StoreRoutes.CART) },
               onOpenSellerAdmin = {
-                viewModel.lockAdmin()
+                viewModel.prepareAdminEntry()
                 navController.navigate(StoreRoutes.ADMIN)
               },
             )
@@ -289,6 +284,8 @@ fun GharBazarApp() {
           composable(StoreRoutes.CONFIRMATION) {
             OrderConfirmationScreen(
               order = uiState.lastConfirmedOrder,
+              orderSyncState = uiState.orderSyncState,
+              onRetryOrderSync = viewModel::retryOrderSync,
               onContinueShopping = {
                 navController.navigate(StoreRoutes.HOME) {
                   popUpTo(navController.graph.findStartDestination().id) {
@@ -307,73 +304,27 @@ fun GharBazarApp() {
                 viewModel.lockAdmin()
                 navController.popBackStack()
               },
+              onSignInCloud = viewModel::signInAdminCloud,
+              onSignOutCloud = viewModel::signOutAdminCloud,
               onSetupPassword = viewModel::setupAdminPassword,
               onUnlock = viewModel::unlockAdmin,
               onChangePassword = viewModel::changeAdminPassword,
+              onStartPickedPhotoUpload = viewModel::startPickedPhotoUpload,
+              onRetryPickedPhotoUpload = viewModel::retryPickedPhotoUpload,
+              onRemovePickedPhoto = viewModel::removePickedPhoto,
+              onClearPickedPhotos = viewModel::clearPickedPhotos,
               onSaveProduct = viewModel::saveAdminProduct,
               onDeleteProduct = viewModel::deleteAdminProduct,
-              onUpdateOrderStatus = viewModel::updateAdminOrderStatus,
-              onClearNotice = viewModel::clearAdminNotice,
-              onAdminSignIn = viewModel::signInAdmin,
-              onAdminSignOut = viewModel::signOutAdmin,
+              onOrdersTabOpened = viewModel::onAdminOrdersTabOpened,
               onRefreshOrders = viewModel::refreshAdminOrders,
-              onCheckForUpdates = viewModel::checkForUpdates,
+              onUpdateOrderStatus = viewModel::updateAdminOrderStatus,
+              onCheckForUpdates = viewModel::checkForUpdatesManually,
+              onDismissUpdateDialog = viewModel::dismissManualUpdateDialog,
+              onClearNotice = viewModel::clearAdminNotice,
             )
           }
         }
       }
-    }
-
-    uiState.availableUpdate?.let { update ->
-      AlertDialog(
-        onDismissRequest = viewModel::dismissUpdateDialog,
-        icon = {
-          Icon(
-            imageVector = Icons.Filled.SystemUpdate,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-          )
-        },
-        title = {
-          Text(
-            text = "Update available",
-            style = MaterialTheme.typography.titleLarge,
-          )
-        },
-        text = {
-          Text(
-            text =
-              "A newer version of GharBazar is available. Tap Update to open the download page in your browser, or Later to continue shopping.",
-            style = MaterialTheme.typography.bodyMedium,
-          )
-        },
-        confirmButton = {
-          Button(
-            onClick = {
-              runCatching {
-                val intent =
-                  Intent(Intent.ACTION_VIEW, Uri.parse(update.apkUrl)).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                  }
-                context.startActivity(intent)
-              }
-              viewModel.dismissUpdateDialog()
-            },
-            modifier = Modifier.testTag("update_dialog_update_button"),
-          ) {
-            Text("Update")
-          }
-        },
-        dismissButton = {
-          TextButton(
-            onClick = viewModel::dismissUpdateDialog,
-            modifier = Modifier.testTag("update_dialog_later_button"),
-          ) {
-            Text("Later")
-          }
-        },
-        modifier = Modifier.testTag("update_available_dialog"),
-      )
     }
   }
 }

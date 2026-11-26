@@ -273,7 +273,7 @@ fun CheckoutScreen(
             ) {
               CachedProductImage(
                 imageRes = item.product.imageRes,
-                imageUri = item.product.imageUri,
+                imageUri = item.product.coverImageUrl,
                 contentDescription = item.product.name,
                 cacheKey = item.product.id,
                 modifier = Modifier.size(44.dp).clip(MaterialTheme.shapes.extraSmall),

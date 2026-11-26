@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -25,15 +26,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LocalShipping
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,10 +62,13 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.ConfirmedOrder
 import com.example.model.formatPkr
+import com.example.viewmodel.OrderSyncState
 
 @Composable
 fun OrderConfirmationScreen(
   order: ConfirmedOrder?,
+  orderSyncState: OrderSyncState,
+  onRetryOrderSync: () -> Unit,
   onContinueShopping: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -127,6 +136,100 @@ fun OrderConfirmationScreen(
         textAlign = TextAlign.Center,
       )
 
+      when (orderSyncState) {
+        OrderSyncState.Idle -> Unit
+        OrderSyncState.Saving -> {
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = MaterialTheme.shapes.medium,
+          ) {
+            Row(
+              modifier = Modifier.padding(12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+              CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+              Text(
+                text = "Sending order to GharBazar…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
+        OrderSyncState.Saved -> {
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.65f),
+            shape = MaterialTheme.shapes.medium,
+          ) {
+            Row(
+              modifier = Modifier.padding(12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.CloudDone,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(18.dp),
+              )
+              Text(
+                text = "Order synced to GharBazar.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                fontWeight = FontWeight.Medium,
+              )
+            }
+          }
+        }
+        is OrderSyncState.Failed -> {
+          Card(
+            modifier = Modifier.fillMaxWidth().testTag("order_sync_error_card"),
+            colors =
+              CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.75f)
+              ),
+            shape = MaterialTheme.shapes.medium,
+          ) {
+            Column(
+              modifier = Modifier.fillMaxWidth().padding(12.dp),
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.CloudOff,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.error,
+                  modifier = Modifier.size(18.dp),
+                )
+                Text(
+                  text = "Could not send order to server: ${orderSyncState.message}",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+              }
+              OutlinedButton(
+                onClick = onRetryOrderSync,
+                modifier = Modifier.testTag("retry_order_sync_button"),
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Refresh,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Retry Upload")
+              }
+            }
+          }
+        }
+      }
+
       if (order != null) {
         Surface(
           modifier = Modifier.fillMaxWidth(),
@@ -166,7 +269,7 @@ fun OrderConfirmationScreen(
           ) {
             StatusStep(
               icon = Icons.Filled.CheckCircle,
-              label = "Confirmed",
+              label = "Placed",
               active = true,
             )
             StatusStep(

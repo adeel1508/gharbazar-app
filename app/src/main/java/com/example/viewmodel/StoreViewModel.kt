@@ -6,36 +6,42 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.AdminAuthDataSource
+import com.example.data.AdminOrdersLoadState
 import com.example.data.AppUpdateDataSource
 import com.example.data.AppUpdateInfo
 import com.example.data.CatalogSyncStatus
 import com.example.data.CloudOrderDataSource
-import com.example.data.CloudOrdersSnapshot
 import com.example.data.CloudProductDataSource
 import com.example.data.CloudProductsSnapshot
+import com.example.data.CloudinaryImageUploader
 import com.example.data.FirebaseAdminAuthDataSource
 import com.example.data.FirestoreAppUpdateDataSource
 import com.example.data.FirestoreOrderDataSource
 import com.example.data.FirestoreProductDataSource
+import com.example.data.ImageUploadService
+import com.example.data.ManualUpdateCheckResult
 import com.example.data.OrderRepository
 import com.example.data.ProductCatalog
 import com.example.data.ProductRepository
-import com.example.data.friendlyAdminAuthError
-import com.example.data.shouldPromptForUpdate
 import com.example.model.CartItem
 import com.example.model.CheckoutFormState
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
 import com.example.model.Product
-import com.example.model.ProductCategory
+import com.example.model.ProductCategories
 import com.example.model.ProductSpec
 import com.example.model.SortOption
+import com.example.model.currentIsoTimestamp
+import com.example.model.resolveGalleryImageUrls
+import com.example.model.sanitizeProductForCloudSave
 import com.example.security.AdminPasswordManager
 import com.example.security.EncryptedPasswordStorage
 import com.example.security.PasswordActionResult
 import com.example.security.PasswordStorage
 import java.util.UUID
 import kotlin.random.Random
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -43,33 +49,60 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+sealed interface OrderSyncState {
+  data object Idle : OrderSyncState
+  data object Saving : OrderSyncState
+  data object Saved : OrderSyncState
+  data class Failed(val message: String) : OrderSyncState
+}
+
+sealed interface PickedPhotoStatus {
+  data object Uploading : PickedPhotoStatus
+  data class Uploaded(val secureUrl: String) : PickedPhotoStatus
+  data class Failed(val errorMessage: String) : PickedPhotoStatus
+}
+
+data class PickedPhotoItem(
+  val id: String,
+  val localUri: String,
+  val status: PickedPhotoStatus,
+)
+
+sealed interface ManualUpdateDialogState {
+  data class Available(val info: AppUpdateInfo) : ManualUpdateDialogState
+  data object UpToDate : ManualUpdateDialogState
+  data class Failed(val message: String) : ManualUpdateDialogState
+}
 
 data class StoreUiState(
-  val allProducts: List<Product> = ProductCatalog.products,
-  val filteredProducts: List<Product> = ProductCatalog.products,
+  val allProducts: List<Product> = emptyList(),
+  val filteredProducts: List<Product> = emptyList(),
+  val availableCategories: List<String> =
+    listOf(ProductCategories.ALL, ProductCategories.BLANKETS, ProductCategories.MENS_SUITS),
   val searchQuery: String = "",
-  /** Display label of the selected category filter; "All" shows everything. */
-  val selectedCategory: String = ProductCategory.ALL.label,
+  val selectedCategory: String = ProductCategories.ALL,
   val sortOption: SortOption = SortOption.FEATURED,
   val cartItems: List<CartItem> = emptyList(),
   val checkoutForm: CheckoutFormState = CheckoutFormState(),
   val lastConfirmedOrder: ConfirmedOrder? = null,
-  val adminOrders: List<ConfirmedOrder> = emptyList(),
-  val syncStatus: CatalogSyncStatus =
-    CatalogSyncStatus.LocalFallback("Using built-in 8-product catalogue"),
+  val orderSyncState: OrderSyncState = OrderSyncState.Idle,
+  val syncStatus: CatalogSyncStatus = CatalogSyncStatus.Loading,
+  // Admin cloud auth (step 1) & local lock (step 2)
+  val cloudAdminEmail: String? = null,
+  val isCloudAuthBusy: Boolean = false,
+  val cloudAuthError: String? = null,
   val isAdminPasswordSet: Boolean = false,
+  val isAdminPasswordChecked: Boolean = false,
   val isAdminUnlocked: Boolean = false,
+  // Admin data & dialogs
+  val adminOrdersState: AdminOrdersLoadState = AdminOrdersLoadState.Idle,
   val adminNotice: String? = null,
-  val availableUpdate: AppUpdateInfo? = null,
-  /** Firebase Auth state for the admin panel (separate from the local admin password). */
-  val isAdminSignedIn: Boolean = false,
-  val adminAuthError: String? = null,
-  /**
-   * True when a cloud Firestore catalogue is configured. The admin panel
-   * gate (cloud sign-in first) only applies then; without a cloud the
-   * local admin password is the only lock, as before.
-   */
-  val isCloudConfigured: Boolean = false,
+  val isProductSaving: Boolean = false,
+  val pickedPhotos: List<PickedPhotoItem> = emptyList(),
+  val isCheckingForUpdates: Boolean = false,
+  val manualUpdateDialogState: ManualUpdateDialogState? = null,
 ) {
   val cartItemCount: Int
     get() = cartItems.sumOf { it.quantity }
@@ -79,6 +112,9 @@ data class StoreUiState(
 
   val cartQuantityByProductId: Map<String, Int>
     get() = cartItems.associate { it.product.id to it.quantity }
+
+  val loadedAdminOrdersCount: Int
+    get() = (adminOrdersState as? AdminOrdersLoadState.Loaded)?.orders?.size ?: 0
 }
 
 class StoreViewModel(
@@ -88,9 +124,11 @@ class StoreViewModel(
     AdminPasswordManager(InMemoryPasswordStorage()),
   private val orderRepository: OrderRepository =
     OrderRepository(cloudDataSource = NoOpCloudOrderDataSource),
+  private val adminAuthDataSource: AdminAuthDataSource = NoOpAdminAuthDataSource,
+  private val imageUploadService: ImageUploadService = NoOpImageUploadService,
   private val appUpdateDataSource: AppUpdateDataSource = NoOpAppUpdateDataSource,
-  private val adminAuth: AdminAuthDataSource = NoOpAdminAuthDataSource,
   private val currentVersionCode: Int = BuildConfig.VERSION_CODE,
+  private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
   private val _uiState =
@@ -98,12 +136,9 @@ class StoreViewModel(
       StoreUiState(
         allProducts = repository.products.value,
         filteredProducts = repository.products.value,
-        adminOrders = orderRepository.orders.value,
+        availableCategories = buildCategoryList(repository.products.value),
         syncStatus = repository.syncStatus.value,
-        isAdminPasswordSet = passwordManager.isPasswordSet(),
-        isAdminUnlocked = false,
-        isAdminSignedIn = adminAuth.isSignedIn,
-        isCloudConfigured = repository.isCloudConfigured,
+        adminOrdersState = orderRepository.ordersState.value,
       )
     )
   val uiState: StateFlow<StoreUiState> = _uiState.asStateFlow()
@@ -111,9 +146,18 @@ class StoreViewModel(
   private val usedOrderNumbers = mutableSetOf<String>()
 
   init {
+    // Crash-safety rule #1: At startup, load ONLY the product list.
+    // No orders listener, no auth-triggered work, no update check, no dialogs.
     viewModelScope.launch {
       repository.products.collect { latestProducts ->
         _uiState.update { state ->
+          val categories = buildCategoryList(latestProducts)
+          val activeCategory =
+            if (categories.any { it.equals(state.selectedCategory, ignoreCase = true) }) {
+              state.selectedCategory
+            } else {
+              ProductCategories.ALL
+            }
           val syncedCart =
             state.cartItems.mapNotNull { cartItem ->
               val updatedProduct = latestProducts.find { it.id == cartItem.product.id }
@@ -125,11 +169,13 @@ class StoreViewModel(
             }
           state.copy(
             allProducts = latestProducts,
+            availableCategories = categories,
+            selectedCategory = activeCategory,
             filteredProducts =
               applyFiltersAndSort(
                 latestProducts,
                 state.searchQuery,
-                state.selectedCategory,
+                activeCategory,
                 state.sortOption,
               ),
             cartItems = syncedCart,
@@ -145,47 +191,14 @@ class StoreViewModel(
     }
 
     viewModelScope.launch {
-      orderRepository.orders.collect { latestOrders ->
-        _uiState.update { it.copy(adminOrders = latestOrders) }
-      }
-    }
-
-    viewModelScope.launch {
-      adminAuth.authState.collect { signedIn ->
-        _uiState.update {
-          it.copy(
-            isAdminSignedIn = signedIn,
-            adminAuthError = if (signedIn) null else it.adminAuthError,
-          )
-        }
+      orderRepository.ordersState.collect { ordersState ->
+        _uiState.update { it.copy(adminOrdersState = ordersState) }
       }
     }
   }
 
-  fun dismissUpdateDialog() {
-    _uiState.update { it.copy(availableUpdate = null) }
-  }
-
-  /**
-   * Manual update check — USER-TRIGGERED ONLY, from the "Check for Updates"
-   * button in the admin panel. NEVER call it from init: v1.0.14 crashed on
-   * launch whenever an update was pending, because the automatic check ran
-   * at startup and the "Update available" dialog popped up on its own. A
-   * newer version shows the same dialog; otherwise the admin panel shows a
-   * short notice ("App is up to date", or a retry notice if the check fails).
-   */
-  fun checkForUpdates() {
-    viewModelScope.launch {
-      val result = runCatching { appUpdateDataSource.fetchUpdateInfo(currentVersionCode) }
-      val prompt = result.getOrNull()?.let { shouldPromptForUpdate(it, currentVersionCode) }
-      if (prompt != null) {
-        _uiState.update { it.copy(availableUpdate = prompt) }
-      } else if (result.isFailure) {
-        _uiState.update { it.copy(adminNotice = "Could not check for updates. Please try again.") }
-      } else {
-        _uiState.update { it.copy(adminNotice = "App is up to date.") }
-      }
-    }
+  fun retryLoadProducts() {
+    repository.refreshProducts()
   }
 
   fun updateSearchQuery(query: String) {
@@ -204,14 +217,15 @@ class StoreViewModel(
   }
 
   fun selectCategory(category: String) {
+    val normalized = ProductCategories.normalize(category)
     _uiState.update { state ->
       state.copy(
-        selectedCategory = category,
+        selectedCategory = normalized,
         filteredProducts =
           applyFiltersAndSort(
             state.allProducts,
             state.searchQuery,
-            category,
+            normalized,
             state.sortOption,
           ),
       )
@@ -237,7 +251,7 @@ class StoreViewModel(
     _uiState.update { state ->
       state.copy(
         searchQuery = "",
-        selectedCategory = ProductCategory.ALL.label,
+        selectedCategory = ProductCategories.ALL,
         sortOption = SortOption.FEATURED,
         filteredProducts = state.allProducts,
       )
@@ -363,6 +377,7 @@ class StoreViewModel(
     }
 
     val orderNumber = generateUniqueOrderNumber()
+    val nowMillis = System.currentTimeMillis()
     val confirmedOrder =
       ConfirmedOrder(
         orderNumber = orderNumber,
@@ -372,8 +387,10 @@ class StoreViewModel(
         city = trimmedCity,
         items = currentState.cartItems,
         totalPkr = currentState.cartTotalPkr,
-        timestamp = System.currentTimeMillis(),
+        timestampIso = currentIsoTimestamp(),
+        timestampMillis = nowMillis,
         status = OrderStatus.PLACED,
+        documentId = orderNumber,
       )
 
     _uiState.update { state ->
@@ -381,17 +398,127 @@ class StoreViewModel(
         cartItems = emptyList(),
         checkoutForm = CheckoutFormState(),
         lastConfirmedOrder = confirmedOrder,
+        orderSyncState = OrderSyncState.Saving,
       )
     }
 
-    // Non-blocking background sync to Firestore; checkout succeeds even if save fails.
-    viewModelScope.launch {
-      runCatching { orderRepository.submitOrder(confirmedOrder) }
-    }
+    // Never block UI while saving guest order; show error state on failure, never crash.
+    submitOrderInBackground(confirmedOrder)
     return true
   }
 
-  // --- Seller / Admin Security & Catalog Management ---
+  fun retryOrderSync() {
+    val order = _uiState.value.lastConfirmedOrder ?: return
+    _uiState.update { it.copy(orderSyncState = OrderSyncState.Saving) }
+    submitOrderInBackground(order)
+  }
+
+  private fun submitOrderInBackground(order: ConfirmedOrder) {
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { orderRepository.submitGuestOrder(order) }
+            .getOrElse { Result.failure(it) }
+        }
+      _uiState.update { state ->
+        if (state.lastConfirmedOrder?.orderNumber != order.orderNumber) {
+          state
+        } else {
+          state.copy(
+            orderSyncState =
+              if (result.isSuccess) {
+                OrderSyncState.Saved
+              } else {
+                OrderSyncState.Failed(
+                  result.exceptionOrNull()?.localizedMessage?.takeIf { it.isNotBlank() }
+                    ?: "Could not sync order right now. Please tap Retry."
+                )
+              }
+          )
+        }
+      }
+    }
+  }
+
+  // --- Admin Entry, Cloud Sign-In (Step 1), and Local Password (Step 2) ---
+
+  fun prepareAdminEntry() {
+    _uiState.update {
+      it.copy(
+        isAdminUnlocked = false,
+        cloudAuthError = null,
+        adminNotice = null,
+      )
+    }
+    viewModelScope.launch {
+      val (email, hasLocalPw) =
+        withContext(ioDispatcher) {
+          val currentEmail = adminAuthDataSource.currentUserEmail()
+          val pwSet = passwordManager.isPasswordSet()
+          currentEmail to pwSet
+        }
+      _uiState.update {
+        it.copy(
+          cloudAdminEmail = email,
+          isAdminPasswordSet = hasLocalPw,
+          isAdminPasswordChecked = true,
+        )
+      }
+    }
+  }
+
+  fun signInAdminCloud(email: String, password: String) {
+    if (_uiState.value.isCloudAuthBusy) return
+    _uiState.update { it.copy(isCloudAuthBusy = true, cloudAuthError = null) }
+
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { adminAuthDataSource.signIn(email, password) }
+            .getOrElse { Result.failure(it) }
+        }
+      val hasLocalPw = withContext(ioDispatcher) { passwordManager.isPasswordSet() }
+
+      // Crash-safety rule #2: Signing in updates UI state ONLY; never triggers data refresh or listener.
+      _uiState.update { state ->
+        result.fold(
+          onSuccess = { signedInEmail ->
+            state.copy(
+              cloudAdminEmail = signedInEmail,
+              isCloudAuthBusy = false,
+              cloudAuthError = null,
+              isAdminPasswordSet = hasLocalPw,
+              isAdminPasswordChecked = true,
+            )
+          },
+          onFailure = { error ->
+            state.copy(
+              isCloudAuthBusy = false,
+              cloudAuthError =
+                error.localizedMessage?.takeIf { it.isNotBlank() }
+                  ?: "Cloud sign-in failed. Check your email and password.",
+            )
+          },
+        )
+      }
+    }
+  }
+
+  fun signOutAdminCloud() {
+    adminAuthDataSource.signOut()
+    orderRepository.resetOrdersState()
+    // Crash-safety rule #2: Signing out updates UI state ONLY.
+    _uiState.update {
+      it.copy(
+        cloudAdminEmail = null,
+        isCloudAuthBusy = false,
+        cloudAuthError = null,
+        isAdminUnlocked = false,
+        adminNotice = null,
+        manualUpdateDialogState = null,
+      )
+    }
+  }
 
   fun setupAdminPassword(password: String, confirmPassword: String): PasswordActionResult {
     val result = passwordManager.setupInitialPassword(password, confirmPassword)
@@ -399,6 +526,7 @@ class StoreViewModel(
       _uiState.update {
         it.copy(
           isAdminPasswordSet = true,
+          isAdminPasswordChecked = true,
           isAdminUnlocked = true,
           adminNotice = null,
         )
@@ -419,8 +547,8 @@ class StoreViewModel(
     _uiState.update {
       it.copy(
         isAdminUnlocked = false,
-        isAdminPasswordSet = passwordManager.isPasswordSet(),
         adminNotice = null,
+        manualUpdateDialogState = null,
       )
     }
   }
@@ -437,60 +565,131 @@ class StoreViewModel(
     _uiState.update { it.copy(adminNotice = null) }
   }
 
-  /** Firebase sign-in for the admin panel (email is fixed to the admin account). */
-  fun signInAdmin(password: String) {
+  // --- Admin Orders (Refresh ONLY on Orders tab open or Refresh tap) ---
+
+  fun onAdminOrdersTabOpened() {
+    if (_uiState.value.cloudAdminEmail.isNullOrBlank() || !_uiState.value.isAdminUnlocked) {
+      return
+    }
+    refreshAdminOrders()
+  }
+
+  fun refreshAdminOrders() {
+    if (_uiState.value.cloudAdminEmail.isNullOrBlank() || !_uiState.value.isAdminUnlocked) {
+      return
+    }
     viewModelScope.launch {
-      val result = adminAuth.signIn(password)
-      _uiState.update {
-        it.copy(
-          isAdminSignedIn = adminAuth.isSignedIn,
-          adminAuthError =
-            if (result.isSuccess) null else friendlyAdminAuthError(result.exceptionOrNull()!!),
-        )
+      withContext(ioDispatcher) {
+        runCatching { orderRepository.refreshOrders() }
       }
     }
   }
 
-  fun signOutAdmin() {
-    adminAuth.signOut()
-    _uiState.update { it.copy(isAdminSignedIn = false, adminAuthError = null) }
-  }
-
-  fun clearAdminAuthError() {
-    _uiState.update { it.copy(adminAuthError = null) }
-  }
-
-  /**
-   * Re-subscribes to the cloud orders feed ([OrderRepository.refreshOrders]).
-   * USER-TRIGGERED ONLY: call this when the admin opens the Orders tab in
-   * the admin panel, or taps the Refresh button there. NEVER call it from
-   * init or from the authState collector — the v1.0.12 design did that and
-   * the app started crashing on launch after admin sign-in, so it was
-   * reverted. An auth-state change on its own must never refresh orders.
-   */
-  fun refreshAdminOrders() {
-    orderRepository.refreshOrders()
-  }
-
-  /**
-   * Cloud product writes need the admin to be signed in: the Firestore rules
-   * only allow product writes for the signed-in admin email. Without this
-   * check the write would fail with PERMISSION_DENIED after the product had
-   * already been added locally. Local-only catalogues (no cloud configured)
-   * are unaffected.
-   */
-  private fun requireAdminSignedInForCloudWrite(action: String): Boolean {
-    if (repository.isCloudConfigured && !adminAuth.isSignedIn) {
+  fun updateAdminOrderStatus(documentId: String, newStatus: OrderStatus) {
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { orderRepository.updateOrderStatus(documentId, newStatus) }
+            .getOrElse { Result.failure(it) }
+        }
       _uiState.update {
         it.copy(
           adminNotice =
-            "Sign in with your GharBazar account in the admin panel to $action."
+            if (result.isSuccess) {
+              "Order status marked as ${newStatus.label}."
+            } else {
+              "Could not update order status: ${result.exceptionOrNull()?.localizedMessage ?: "try again"}"
+            }
         )
       }
-      return false
     }
-    return true
   }
+
+  // --- Admin Cloudinary Photo Picking & Upload ---
+
+  fun initPickedPhotosForProduct(product: Product?) {
+    val existing =
+      product?.galleryImageUrls.orEmpty().mapIndexed { idx, url ->
+        PickedPhotoItem(
+          id = "existing_$idx",
+          localUri = url,
+          status = PickedPhotoStatus.Uploaded(url),
+        )
+      }
+    _uiState.update { it.copy(pickedPhotos = existing) }
+  }
+
+  fun startPickedPhotoUpload(localUriString: String) {
+    val id = "pick_${UUID.randomUUID().toString().take(8)}"
+    val newItem =
+      PickedPhotoItem(
+        id = id,
+        localUri = localUriString,
+        status = PickedPhotoStatus.Uploading,
+      )
+    _uiState.update { it.copy(pickedPhotos = it.pickedPhotos + newItem) }
+    uploadPhotoItem(id, localUriString)
+  }
+
+  fun retryPickedPhotoUpload(id: String) {
+    val target = _uiState.value.pickedPhotos.find { it.id == id } ?: return
+    _uiState.update { state ->
+      state.copy(
+        pickedPhotos =
+          state.pickedPhotos.map { item ->
+            if (item.id == id) item.copy(status = PickedPhotoStatus.Uploading) else item
+          }
+      )
+    }
+    uploadPhotoItem(id, target.localUri)
+  }
+
+  fun removePickedPhoto(id: String) {
+    _uiState.update { state ->
+      state.copy(pickedPhotos = state.pickedPhotos.filterNot { it.id == id })
+    }
+  }
+
+  fun clearPickedPhotos() {
+    _uiState.update { it.copy(pickedPhotos = emptyList()) }
+  }
+
+  private fun uploadPhotoItem(id: String, localUriString: String) {
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { imageUploadService.uploadGalleryUri(localUriString) }
+            .getOrElse { Result.failure(it) }
+        }
+      _uiState.update { state ->
+        state.copy(
+          pickedPhotos =
+            state.pickedPhotos.map { item ->
+              if (item.id != id) {
+                item
+              } else {
+                result.fold(
+                  onSuccess = { url ->
+                    item.copy(status = PickedPhotoStatus.Uploaded(url))
+                  },
+                  onFailure = { err ->
+                    item.copy(
+                      status =
+                        PickedPhotoStatus.Failed(
+                          err.localizedMessage?.takeIf { it.isNotBlank() }
+                            ?: "Photo upload failed. Remove or retry."
+                        )
+                    )
+                  },
+                )
+              }
+            }
+        )
+      }
+    }
+  }
+
+  // --- Admin Product CRUD ---
 
   fun saveAdminProduct(
     editingProductId: String?,
@@ -501,38 +700,26 @@ class StoreViewModel(
     size: String,
     description: String,
     imageKey: String,
-    imageUri: String?,
-    imageUris: List<String> = emptyList(),
+    typedImageUrls: List<String>,
+    uploadedImageUrls: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
+    onResult: (Result<Unit>) -> Unit = {},
   ) {
-    if (!requireAdminSignedInForCloudWrite("save products to the cloud")) return
-    val normalizedCategory =
-      ProductCategory.fromStored(category).takeIf { it != ProductCategory.ALL.label }
-        ?: ProductCategory.BLANKETS.label
+    val normalizedCategory = ProductCategories.normalize(category)
     val cleanName = name.trim()
     val cleanFabric = fabric.trim()
     val cleanSize = size.trim()
     val cleanDescription = description.trim()
     val cleanQty = if (inStock) stockQuantity.coerceAtLeast(1) else 0
     val resolvedRes = ProductCatalog.resolveDrawableForKey(imageKey, normalizedCategory)
-    // The gallery is the cleaned URL list; the cover is the first gallery
-    // photo (or the single imageUri when no list was given).
-    // Only remote (http/https) URLs are ever persisted: a photo picked from
-    // the phone is a device-local content:// URI — the admin form uploads
-    // it to free photo hosting first and saves only the returned https
-    // URL. This filter is the last line of defence against a stray local
-    // link reaching Firestore, where it would be broken on the website
-    // and on every other device.
-    val cleanImageUris =
-      imageUris.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        .filter { it.startsWith("http://") || it.startsWith("https://") }
-    val coverUri =
-      imageUri?.takeIf { it.isNotBlank() && (it.startsWith("http://") || it.startsWith("https://")) }
-        ?: cleanImageUris.firstOrNull()
-    val galleryUris =
-      if (coverUri != null && coverUri !in cleanImageUris) listOf(coverUri) + cleanImageUris
-      else cleanImageUris
+
+    // Picked Cloudinary uploads first, then typed Photo URLs; strictly strip non-http(s) URIs
+    val combinedImageUrls =
+      resolveGalleryImageUrls(
+        imageUris = uploadedImageUrls + typedImageUrls,
+        imageUri = null,
+      )
 
     val specs =
       buildList {
@@ -548,76 +735,114 @@ class StoreViewModel(
         .ifBlank { normalizedCategory }
 
     val product =
-      Product(
-        id = editingProductId ?: "prod_${UUID.randomUUID().toString().take(8)}",
-        name = cleanName,
-        pricePkr = pricePkr,
-        category = normalizedCategory,
-        fabric = cleanFabric,
-        size = cleanSize,
-        shortSpec = shortSpec,
-        specs = specs,
-        description = cleanDescription,
-        imageKey = imageKey,
-        imageRes = resolvedRes,
-        imageUri = coverUri,
-        imageUris = galleryUris,
-        inStock = inStock,
-        stockQuantity = cleanQty,
+      sanitizeProductForCloudSave(
+        Product(
+          id = editingProductId ?: "prod_${UUID.randomUUID().toString().take(8)}",
+          name = cleanName,
+          pricePkr = pricePkr,
+          category = normalizedCategory,
+          fabric = cleanFabric,
+          size = cleanSize,
+          shortSpec = shortSpec,
+          specs = specs,
+          description = cleanDescription,
+          imageKey = imageKey,
+          imageRes = resolvedRes,
+          imageUri = combinedImageUrls.firstOrNull(),
+          imageUris = combinedImageUrls,
+          inStock = inStock,
+          stockQuantity = cleanQty,
+        )
       )
 
+    _uiState.update { it.copy(isProductSaving = true) }
     viewModelScope.launch {
       val result =
-        if (editingProductId == null) {
-          repository.addProduct(product)
-        } else {
-          repository.updateProduct(product)
+        withContext(ioDispatcher) {
+          runCatching {
+            if (editingProductId == null) {
+              repository.addProduct(product)
+            } else {
+              repository.updateProduct(product)
+            }
+          }.getOrElse { Result.failure(it) }
+        }
+
+      _uiState.update {
+        it.copy(
+          isProductSaving = false,
+          adminNotice =
+            if (result.isSuccess) {
+              if (editingProductId == null) "Product added to Firestore." else "Product updated."
+            } else {
+              "Save failed: ${result.exceptionOrNull()?.localizedMessage ?: "check admin sign-in"}"
+            },
+        )
+      }
+      onResult(result)
+    }
+  }
+
+  fun deleteAdminProduct(productId: String) {
+    viewModelScope.launch {
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { repository.deleteProduct(productId) }
+            .getOrElse { Result.failure(it) }
         }
       _uiState.update {
         it.copy(
           adminNotice =
             if (result.isSuccess) {
-              if (editingProductId == null) "Product added to catalogue." else "Product updated."
+              "Product deleted from Firestore."
             } else {
-              "Updated locally; cloud sync pending (${result.exceptionOrNull()?.message ?: "offline"})."
+              "Delete failed: ${result.exceptionOrNull()?.localizedMessage ?: "try again"}"
             }
         )
       }
     }
   }
 
-  fun deleteAdminProduct(productId: String) {
-    if (!requireAdminSignedInForCloudWrite("delete products from the cloud")) return
+  // --- Manual-Only Update Check ---
+
+  fun checkForUpdatesManually() {
+    if (_uiState.value.isCheckingForUpdates) return
+    _uiState.update { it.copy(isCheckingForUpdates = true, manualUpdateDialogState = null) }
+
     viewModelScope.launch {
-      val result = repository.deleteProduct(productId)
-      _uiState.update {
-        it.copy(
-          adminNotice =
-            if (result.isSuccess) {
-              "Product deleted from catalogue."
-            } else {
-              "Removed locally; cloud sync pending (${result.exceptionOrNull()?.message ?: "offline"})."
-            }
+      val result =
+        withContext(ioDispatcher) {
+          runCatching { appUpdateDataSource.checkForUpdate(currentVersionCode) }
+            .getOrElse { Result.failure(it) }
+        }
+      _uiState.update { state ->
+        val dialogState =
+          result.fold(
+            onSuccess = { outcome ->
+              when (outcome) {
+                is ManualUpdateCheckResult.UpdateAvailable ->
+                  ManualUpdateDialogState.Available(outcome.info)
+                ManualUpdateCheckResult.UpToDate ->
+                  ManualUpdateDialogState.UpToDate
+              }
+            },
+            onFailure = { err ->
+              ManualUpdateDialogState.Failed(
+                err.localizedMessage?.takeIf { it.isNotBlank() }
+                  ?: "Could not check for updates. Please try again."
+              )
+            },
+          )
+        state.copy(
+          isCheckingForUpdates = false,
+          manualUpdateDialogState = dialogState,
         )
       }
     }
   }
 
-  fun updateAdminOrderStatus(orderNumber: String, newStatus: OrderStatus) {
-    if (!requireAdminSignedInForCloudWrite("change order status in the cloud")) return
-    viewModelScope.launch {
-      val result = orderRepository.updateOrderStatus(orderNumber, newStatus)
-      _uiState.update {
-        it.copy(
-          adminNotice =
-            if (result.isSuccess) {
-              "Order $orderNumber marked as ${newStatus.label}."
-            } else {
-              "Updated locally; cloud sync pending (${result.exceptionOrNull()?.message ?: "offline"})."
-            }
-        )
-      }
-    }
+  fun dismissManualUpdateDialog() {
+    _uiState.update { it.copy(manualUpdateDialogState = null) }
   }
 
   private fun generateUniqueOrderNumber(): String {
@@ -627,6 +852,22 @@ class StoreViewModel(
       candidate = "GB-$code"
     } while (!usedOrderNumbers.add(candidate))
     return candidate
+  }
+
+  private fun buildCategoryList(products: List<Product>): List<String> {
+    val base =
+      mutableListOf(
+        ProductCategories.ALL,
+        ProductCategories.BLANKETS,
+        ProductCategories.MENS_SUITS,
+      )
+    products.forEach { product ->
+      val normalized = ProductCategories.normalize(product.category)
+      if (normalized.isNotBlank() && base.none { it.equals(normalized, ignoreCase = true) }) {
+        base.add(normalized)
+      }
+    }
+    return base
   }
 
   private fun applyFiltersAndSort(
@@ -639,10 +880,13 @@ class StoreViewModel(
     val filtered =
       products.filter { product ->
         val matchesCategory =
-          category == ProductCategory.ALL.label || product.category == category
+          category.equals(ProductCategories.ALL, ignoreCase = true) ||
+            product.category.equals(category, ignoreCase = true)
         val matchesQuery =
           normalizedQuery.isEmpty() ||
-            product.name.contains(normalizedQuery, ignoreCase = true)
+            product.name.contains(normalizedQuery, ignoreCase = true) ||
+            product.fabric.contains(normalizedQuery, ignoreCase = true) ||
+            product.category.contains(normalizedQuery, ignoreCase = true)
         matchesCategory && matchesQuery
       }
     return when (sortOption) {
@@ -670,14 +914,16 @@ class StoreViewModel(
             AdminPasswordManager(
               storage = EncryptedPasswordStorage(appContext)
             )
+          val adminAuthDataSource = FirebaseAdminAuthDataSource(appContext)
+          val imageUploadService = CloudinaryImageUploader(appContext)
           val appUpdateDataSource = FirestoreAppUpdateDataSource(appContext)
-          val adminAuth = FirebaseAdminAuthDataSource(appContext)
           return StoreViewModel(
             repository = repository,
             passwordManager = passwordManager,
             orderRepository = orderRepository,
+            adminAuthDataSource = adminAuthDataSource,
+            imageUploadService = imageUploadService,
             appUpdateDataSource = appUpdateDataSource,
-            adminAuth = adminAuth,
             currentVersionCode = BuildConfig.VERSION_CODE,
           ) as T
         }
@@ -689,29 +935,34 @@ class StoreViewModel(
 private object NoOpCloudProductDataSource : CloudProductDataSource {
   override val isConfigured: Boolean = false
   override fun observeProducts(): Flow<CloudProductsSnapshot> = emptyFlow()
+  override suspend fun fetchProductsOnce(): CloudProductsSnapshot = CloudProductsSnapshot.Empty
   override suspend fun upsertProduct(product: Product): Result<Unit> = Result.success(Unit)
   override suspend fun deleteProduct(productId: String): Result<Unit> = Result.success(Unit)
 }
 
 private object NoOpCloudOrderDataSource : CloudOrderDataSource {
   override val isConfigured: Boolean = false
-  override fun observeOrders(): Flow<CloudOrdersSnapshot> = emptyFlow()
+  override suspend fun fetchOrders(): Result<List<ConfirmedOrder>> = Result.success(emptyList())
   override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> = Result.success(Unit)
-  override suspend fun updateOrderStatus(orderNumber: String, status: OrderStatus): Result<Unit> =
+  override suspend fun updateOrderStatus(documentId: String, status: OrderStatus): Result<Unit> =
     Result.success(Unit)
 }
 
-private object NoOpAppUpdateDataSource : AppUpdateDataSource {
-  override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo? = null
+private object NoOpAdminAuthDataSource : AdminAuthDataSource {
+  override fun currentUserEmail(): String? = null
+  override suspend fun signIn(email: String, password: String): Result<String> =
+    Result.failure(IllegalStateException("Auth not configured"))
+  override fun signOut() = Unit
 }
 
-private object NoOpAdminAuthDataSource : AdminAuthDataSource {
-  override val adminEmail: String = ""
-  override val isSignedIn: Boolean = false
-  override val authState: Flow<Boolean> = emptyFlow()
-  override suspend fun signIn(password: String): Result<Unit> =
-    Result.failure(IllegalStateException("Firebase Auth is not configured"))
-  override fun signOut() = Unit
+private object NoOpImageUploadService : ImageUploadService {
+  override suspend fun uploadGalleryUri(localUriString: String): Result<String> =
+    Result.failure(IllegalStateException("Uploader not configured"))
+}
+
+private object NoOpAppUpdateDataSource : AppUpdateDataSource {
+  override suspend fun checkForUpdate(currentVersionCode: Int): Result<ManualUpdateCheckResult> =
+    Result.success(ManualUpdateCheckResult.UpToDate)
 }
 
 private class InMemoryPasswordStorage : PasswordStorage {

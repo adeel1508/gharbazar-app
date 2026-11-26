@@ -2,11 +2,7 @@ package com.example.data
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.FirebaseApp
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Source
-import com.google.firebase.firestore.firestoreSettings
-import com.google.firebase.firestore.persistentCacheSettings
+import com.example.model.isValidRemoteImageUrl
 import kotlinx.coroutines.tasks.await
 
 data class AppUpdateInfo(
@@ -14,32 +10,41 @@ data class AppUpdateInfo(
   val apkUrl: String,
 )
 
-interface AppUpdateDataSource {
-  suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo?
+sealed interface ManualUpdateCheckResult {
+  data class UpdateAvailable(val info: AppUpdateInfo) : ManualUpdateCheckResult
+  data object UpToDate : ManualUpdateCheckResult
 }
 
-fun shouldPromptForUpdate(
-  updateInfo: AppUpdateInfo?,
+interface AppUpdateDataSource {
+  suspend fun checkForUpdate(currentVersionCode: Int): Result<ManualUpdateCheckResult>
+}
+
+fun evaluateManualUpdateCheck(
+  latestVersionCode: Int?,
+  apkUrl: String?,
   currentVersionCode: Int,
-): AppUpdateInfo? {
-  if (updateInfo == null) return null
-  val url = updateInfo.apkUrl.trim()
-  if (updateInfo.latestVersionCode <= currentVersionCode || url.isEmpty()) {
-    return null
+): ManualUpdateCheckResult {
+  val remoteCode = latestVersionCode ?: return ManualUpdateCheckResult.UpToDate
+  val cleanUrl = apkUrl?.trim().orEmpty()
+  if (remoteCode > currentVersionCode && isValidRemoteImageUrl(cleanUrl)) {
+    return ManualUpdateCheckResult.UpdateAvailable(
+      AppUpdateInfo(
+        latestVersionCode = remoteCode,
+        apkUrl = cleanUrl,
+      )
+    )
   }
-  val normalizedUrl =
-    if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
-      url
-    } else {
-      "https://$url"
-    }
-  return updateInfo.copy(apkUrl = normalizedUrl)
+  return ManualUpdateCheckResult.UpToDate
 }
 
 /**
- * Reads `app_config/version` from Cloud Firestore on launch.
- * Creates the document with the current `versionCode` and an empty `apkUrl` if it does not exist yet.
- * Never throws or blocks normal app operation if missing or unreadable.
+ * Manual-only update checker.
+ *
+ * Crash-safety rules:
+ * - Never runs at app launch.
+ * - Reads `app_config/version` from Firestore ONLY when admin explicitly taps "Check for Updates".
+ * - Never writes or seeds Firestore documents.
+ * - Uses the single shared [FirebaseClient] Firestore instance.
  */
 class FirestoreAppUpdateDataSource(
   context: Context,
@@ -47,74 +52,43 @@ class FirestoreAppUpdateDataSource(
 
   private val appContext = context.applicationContext
 
-  private val firestore: FirebaseFirestore? by lazy {
-    runCatching {
-      val apps = FirebaseApp.getApps(appContext)
-      val app =
-        if (apps.isNotEmpty()) {
-          apps.first()
-        } else {
-          FirebaseApp.initializeApp(appContext)
-        }
-      if (app == null) {
-        null
-      } else {
-        FirebaseFirestore.getInstance(app).apply {
-          firestoreSettings = firestoreSettings {
-            setLocalCacheSettings(persistentCacheSettings { })
-          }
-        }
-      }
-    }.onFailure { error ->
-      Log.w(TAG, "Firebase Firestore unavailable for app update check: ${error.message}")
-    }.getOrNull()
-  }
+  private val firestore
+    get() = FirebaseClient.getFirestore(appContext)
 
-  override suspend fun fetchUpdateInfo(currentVersionCode: Int): AppUpdateInfo? {
-    val db = firestore ?: return null
+  override suspend fun checkForUpdate(
+    currentVersionCode: Int,
+  ): Result<ManualUpdateCheckResult> {
+    val db =
+      firestore
+        ?: return Result.failure(IllegalStateException("Firebase Firestore is not configured."))
+
     return runCatching {
-      val docRef = db.collection(APP_CONFIG_COLLECTION).document(VERSION_DOCUMENT)
-
-      val serverSnapshot = runCatching { docRef.get(Source.SERVER).await() }.getOrNull()
       val snapshot =
-        if (serverSnapshot != null) {
-          if (!serverSnapshot.exists()) {
-            // Seed app_config/version so the remote update mechanism is ready
-            runCatching {
-              docRef.set(
-                mapOf(
-                  FIELD_LATEST_VERSION_CODE to currentVersionCode,
-                  FIELD_APK_URL to "",
-                )
-              ).await()
-            }.onFailure { err ->
-              Log.w(TAG, "Could not seed app_config/version: ${err.message}")
-            }
-            return@runCatching AppUpdateInfo(
-              latestVersionCode = currentVersionCode,
-              apkUrl = "",
-            )
-          }
-          serverSnapshot
-        } else {
-          // Offline fallback to cached document if previously fetched
-          runCatching { docRef.get(Source.CACHE).await() }.getOrNull()
-        }
+        db.collection(APP_CONFIG_COLLECTION)
+          .document(VERSION_DOCUMENT)
+          .get()
+          .await()
 
-      if (snapshot == null || !snapshot.exists()) {
-        return@runCatching null
+      if (!snapshot.exists()) {
+        return@runCatching ManualUpdateCheckResult.UpToDate
       }
 
       val latestVersionCode =
-        (snapshot.get(FIELD_LATEST_VERSION_CODE) as? Number)?.toInt() ?: return@runCatching null
-      val apkUrl = snapshot.getString(FIELD_APK_URL).orEmpty().trim()
-      AppUpdateInfo(
+        when (val raw = snapshot.get(FIELD_LATEST_VERSION_CODE)) {
+          is Number -> raw.toInt()
+          is String -> raw.trim().toIntOrNull()
+          else -> null
+        }
+      val apkUrl = snapshot.getString(FIELD_APK_URL)?.trim()
+
+      evaluateManualUpdateCheck(
         latestVersionCode = latestVersionCode,
         apkUrl = apkUrl,
+        currentVersionCode = currentVersionCode,
       )
-    }.onFailure { error ->
-      Log.w(TAG, "Failed to read app_config/version: ${error.message}")
-    }.getOrNull()
+    }.onFailure { err ->
+      Log.w(TAG, "Manual update check failed: ${err.message}")
+    }
   }
 
   companion object {

@@ -2,53 +2,28 @@ package com.example.model
 
 import androidx.annotation.DrawableRes
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Date
 import java.util.Locale
 
-enum class ProductCategory(val label: String) {
-  ALL("All"),
-  BLANKETS("Blankets"),
-  MENS_SUITS("Men's Suits");
+object ProductCategories {
+  const val ALL = "All"
+  const val BLANKETS = "Blankets"
+  const val MENS_SUITS = "Men's Suits"
 
-  companion object {
-    /**
-     * Canonical display label for a stored category value. Accepts the old
-     * enum names ("BLANKETS", "MENS_SUITS") or the labels ("Blankets",
-     * "Men's Suits") in any case, and passes any other (custom) category
-     * through unchanged. Blank or unknown values fall back to Blankets,
-     * matching the previous behaviour for unreadable documents.
-     */
-    fun fromStored(value: String?): String {
-      val trimmed = value?.trim().orEmpty()
-      if (trimmed.isEmpty()) return BLANKETS.label
-      entries.firstOrNull {
-        it != ALL &&
-          (it.name.equals(trimmed, ignoreCase = true) ||
-            it.label.equals(trimmed, ignoreCase = true))
-      }?.let { return it.label }
-      return trimmed
+  fun normalize(raw: String?): String {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.isEmpty()) return BLANKETS
+    return when (trimmed.uppercase(Locale.ROOT)) {
+      "ALL" -> ALL
+      "BLANKETS", "BLANKET" -> BLANKETS
+      "MENS_SUITS", "MEN'S SUITS", "MENS SUITS", "MEN SUITS" -> MENS_SUITS
+      else -> trimmed
     }
-
-    /**
-     * Firestore wire value for a category label. The two built-in categories
-     * keep their enum names ("BLANKETS" / "MENS_SUITS") because the website
-     * home filters match on those exact values; a custom category is stored
-     * as its label, so the website shows it under "All" until its filters
-     * are derived from the products too.
-     */
-    fun wireValue(label: String): String {
-      val trimmed = label.trim()
-      entries.firstOrNull {
-        it != ALL && it.label.equals(trimmed, ignoreCase = true)
-      }?.let { return it.name }
-      return trimmed
-    }
-
-    fun isKnownLabel(label: String): Boolean =
-      entries.any { it != ALL && it.label.equals(label.trim(), ignoreCase = true) }
-
-    /** True when the category should use a men's-suit fallback image. */
-    fun isSuitCategory(label: String): Boolean =
-      MENS_SUITS.label.equals(label.trim(), ignoreCase = true)
   }
 }
 
@@ -69,11 +44,57 @@ data class ProductPhotoOption(
   @DrawableRes val imageRes: Int,
 )
 
+fun isValidRemoteImageUrl(url: String?): Boolean {
+  val trimmed = url?.trim().orEmpty()
+  return trimmed.startsWith("https://", ignoreCase = true) ||
+    trimmed.startsWith("http://", ignoreCase = true)
+}
+
+/**
+ * Gallery parsing priority:
+ * 1. Valid remote URLs in `imageUris` (first entry is cover photo)
+ * 2. Fallback to single remote `imageUri`
+ * 3. Empty list -> UI displays local placeholder drawable
+ *
+ * Phone-local `content://` or `file://` URIs are strictly excluded.
+ */
+fun resolveGalleryImageUrls(
+  imageUris: List<String>?,
+  imageUri: String?,
+): List<String> {
+  val fromList =
+    imageUris
+      .orEmpty()
+      .map { it.trim() }
+      .filter { isValidRemoteImageUrl(it) }
+      .distinct()
+  if (fromList.isNotEmpty()) {
+    return fromList
+  }
+  val single = imageUri?.trim().orEmpty()
+  if (isValidRemoteImageUrl(single)) {
+    return listOf(single)
+  }
+  return emptyList()
+}
+
+/**
+ * Strips any phone-local URI (`content://`, `file://`, etc.) so only valid http/https URLs
+ * can ever be persisted to Firestore.
+ */
+fun sanitizeProductForCloudSave(product: Product): Product {
+  val cleanUris = resolveGalleryImageUrls(product.imageUris, product.imageUri)
+  return product.copy(
+    category = ProductCategories.normalize(product.category),
+    imageUris = cleanUris,
+    imageUri = cleanUris.firstOrNull(),
+  )
+}
+
 data class Product(
   val id: String,
   val name: String,
   val pricePkr: Int,
-  /** Display label of the category, e.g. "Blankets", "Men's Suits" or a custom one. */
   val category: String,
   val fabric: String,
   val size: String,
@@ -83,48 +104,18 @@ data class Product(
   val imageKey: String,
   @DrawableRes val imageRes: Int,
   val imageUri: String? = null,
+  val imageUris: List<String> = emptyList(),
   val inStock: Boolean = true,
   val stockQuantity: Int = 20,
-  /**
-   * Ordered photo URLs for the product detail gallery. The first entry is
-   * the cover photo shown on the home screen (same value as [imageUri]
-   * when the gallery is non-empty). Empty for products that only have a
-   * built-in drawable photo — then [galleryPhotos] yields a single null
-   * entry and the drawable is shown instead.
-   */
-  val imageUris: List<String> = emptyList(),
 ) {
   val isAvailable: Boolean
     get() = inStock && stockQuantity > 0
 
-  /**
-   * Ordered photos for the product detail gallery. Each entry is a
-   * remote/local URI string, or null when the product has no photo URL at
-   * all — then the built-in drawable ([imageRes]) is shown instead.
-   */
-  fun galleryPhotos(): List<String?> {
-    return if (imageUris.isNotEmpty()) imageUris else listOf(imageUri)
-  }
-}
+  val galleryImageUrls: List<String>
+    get() = resolveGalleryImageUrls(imageUris, imageUri)
 
-/**
- * Home-screen filter chips derived from the loaded products, so a category
- * the owner creates in the admin panel appears as a filter automatically.
- * "All" comes first, then the two built-in categories in fixed order, then
- * any custom categories alphabetically. Each entry is (label, product count).
- */
-fun categoryFiltersFor(products: List<Product>): List<Pair<String, Int>> {
-  val counts = products.groupingBy { it.category }.eachCount()
-  val ordered = mutableListOf<Pair<String, Int>>()
-  ordered += ProductCategory.ALL.label to products.size
-  listOf(ProductCategory.BLANKETS, ProductCategory.MENS_SUITS).forEach { known ->
-    counts[known.label]?.let { ordered += known.label to it }
-  }
-  counts.keys
-    .filter { !ProductCategory.isKnownLabel(it) && !it.equals(ProductCategory.ALL.label, ignoreCase = true) }
-    .sortedWith(String.CASE_INSENSITIVE_ORDER)
-    .forEach { ordered += it to (counts[it] ?: 0) }
-  return ordered
+  val coverImageUrl: String?
+    get() = galleryImageUrls.firstOrNull()
 }
 
 data class CartItem(
@@ -155,8 +146,8 @@ enum class OrderStatus(val wireValue: String, val label: String) {
   companion object {
     fun fromWireValue(value: String?): OrderStatus {
       return entries.firstOrNull {
-        it.wireValue.equals(value, ignoreCase = true) ||
-          it.name.equals(value, ignoreCase = true)
+        it.wireValue.equals(value?.trim(), ignoreCase = true) ||
+          it.name.equals(value?.trim(), ignoreCase = true)
       } ?: PLACED
     }
   }
@@ -170,9 +161,56 @@ data class ConfirmedOrder(
   val city: String,
   val items: List<CartItem>,
   val totalPkr: Int,
-  val timestamp: Long = System.currentTimeMillis(),
+  val timestampIso: String = currentIsoTimestamp(),
+  val timestampMillis: Long = System.currentTimeMillis(),
   val status: OrderStatus = OrderStatus.PLACED,
+  val documentId: String = orderNumber,
 )
+
+fun currentIsoTimestamp(): String = Instant.now().toString()
+
+fun parseIsoOrEpochMillis(rawString: String?): Long {
+  val trimmed = rawString?.trim().orEmpty()
+  if (trimmed.isEmpty()) return 0L
+
+  trimmed.toLongOrNull()?.let { numeric ->
+    return if (numeric in 1..9_999_999_999L) numeric * 1000L else numeric
+  }
+
+  runCatching { return Instant.parse(trimmed).toEpochMilli() }
+  runCatching { return OffsetDateTime.parse(trimmed).toInstant().toEpochMilli() }
+
+  val fallbackPatterns =
+    listOf(
+      "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+      "yyyy-MM-dd'T'HH:mm:ss'Z'",
+      "yyyy-MM-dd HH:mm:ss",
+      "yyyy-MM-dd",
+    )
+  for (pattern in fallbackPatterns) {
+    runCatching {
+      val sdf = SimpleDateFormat(pattern, Locale.US)
+      val date = sdf.parse(trimmed)
+      if (date != null) return date.time
+    }
+  }
+  return 0L
+}
+
+fun formatOrderTimeForDisplay(timestampIso: String?, timestampMillis: Long): String {
+  if (timestampMillis > 0L) {
+    return runCatching {
+      val formatter =
+        DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a", Locale.getDefault())
+          .withZone(ZoneId.systemDefault())
+      formatter.format(Instant.ofEpochMilli(timestampMillis))
+    }.getOrElse {
+      SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(timestampMillis))
+    }
+  }
+  val cleaned = timestampIso?.trim().orEmpty()
+  return cleaned.ifEmpty { "Time unavailable" }
+}
 
 fun formatPkr(amount: Int): String {
   val formatter = NumberFormat.getIntegerInstance(Locale.US)

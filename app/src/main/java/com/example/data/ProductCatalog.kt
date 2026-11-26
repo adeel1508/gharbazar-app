@@ -3,7 +3,7 @@ package com.example.data
 import androidx.annotation.DrawableRes
 import com.example.R
 import com.example.model.Product
-import com.example.model.ProductCategory
+import com.example.model.ProductCategories
 import com.example.model.ProductPhotoOption
 import com.example.model.ProductSpec
 
@@ -56,23 +56,28 @@ object ProductCatalog {
   @DrawableRes
   fun resolveDrawableForKey(
     key: String,
-    fallbackCategoryLabel: String = ProductCategory.BLANKETS.label,
+    fallbackCategory: String = ProductCategories.BLANKETS,
   ): Int {
-    return photoOptions.find { it.key == key }?.imageRes
-      ?: if (ProductCategory.isSuitCategory(fallbackCategoryLabel)) {
-        R.drawable.img_suit_boski_1795368943150
-      } else {
-        R.drawable.img_blanket_plain_blue_1795368928571
-      }
+    val cleanKey = key.trim()
+    val matched = photoOptions.find { it.key == cleanKey }?.imageRes
+    if (matched != null) return matched
+    return if (fallbackCategory.equals(ProductCategories.MENS_SUITS, ignoreCase = true)) {
+      R.drawable.img_suit_boski_1795368943150
+    } else {
+      R.drawable.img_blanket_plain_blue_1795368928571
+    }
   }
 
+  /**
+   * Local sample fixtures used solely by unit tests (live app reads Firestore `products` directly).
+   */
   val products: List<Product> =
     listOf(
       Product(
         id = "blanket_cozy_fleece_black",
         name = "Cozy Fleece Printed Double Bed Blanket",
         pricePkr = 1949,
-        category = ProductCategory.BLANKETS.label,
+        category = ProductCategories.BLANKETS,
         fabric = "Fleece",
         size = "Double Bed, 89x90 inches",
         shortSpec = "Double Bed • 89x90 in • Fleece • Black",
@@ -85,7 +90,7 @@ object ProductCatalog {
             ProductSpec("Color", "Black"),
           ),
         description =
-          "Wrap yourself in plush warmth with this Cozy Fleece Printed Double Bed Blanket. Crafted from ultra-soft fleece in a striking black printed finish, its generous 89x90 inch dimensions comfortably cover a full double bed while staying lightweight and easy to care for throughout the winter season.",
+          "Wrap yourself in plush warmth with this Cozy Fleece Printed Double Bed Blanket.",
         imageKey = "blanket_printed_black",
         imageRes = R.drawable.img_blanket_printed_black_1795368929423,
         inStock = true,
@@ -95,7 +100,7 @@ object ProductCatalog {
         id = "blanket_fleece_navy_white",
         name = "Fleece Printed Double Bed Blanket Navy White",
         pricePkr = 1949,
-        category = ProductCategory.BLANKETS.label,
+        category = ProductCategories.BLANKETS,
         fabric = "Fleece",
         size = "Double Bed, 88x90 inches",
         shortSpec = "Double Bed • 88x90 in • Fleece • Blue",
@@ -108,7 +113,7 @@ object ProductCatalog {
             ProductSpec("Color", "Blue"),
           ),
         description =
-          "Designed for crisp comfort and timeless bedroom style, the Fleece Printed Double Bed Blanket in Navy White pairs a rich blue and crisp white print with soft insulating fleece. Sized at 88x90 inches for double beds, it delivers cozy warmth without heavy bulk.",
+          "Fleece Printed Double Bed Blanket in Navy White with soft insulating fleece.",
         imageKey = "blanket_navy_white",
         imageRes = R.drawable.img_blanket_navy_white_1795368929031,
         inStock = true,
@@ -118,7 +123,7 @@ object ProductCatalog {
         id = "blanket_stylish_plain_blue",
         name = "Stylish Fleece Plain Double Bed Blanket",
         pricePkr = 2599,
-        category = ProductCategory.BLANKETS.label,
+        category = ProductCategories.BLANKETS,
         fabric = "Fleece",
         size = "Double Bed, 89x90 inches",
         shortSpec = "Double Bed • 89x90 in • Fleece • Plain Blue",
@@ -131,7 +136,7 @@ object ProductCatalog {
             ProductSpec("Color", "Blue"),
           ),
         description =
-          "Elevate your winter bedding with the Stylish Fleece Plain Double Bed Blanket. Tailored in a refined solid blue shade from dense velvety fleece (89x90 inches), it offers smooth drape, lasting softness, and dependable warmth for chilly nights across Pakistan.",
+          "Refined solid blue double bed blanket crafted from dense velvety fleece.",
         imageKey = "blanket_plain_blue",
         imageRes = R.drawable.img_blanket_plain_blue_1795368928571,
         inStock = true,
@@ -141,7 +146,7 @@ object ProductCatalog {
         id = "blanket_3d_embossed_red",
         name = "3D Panel Fleece Embossed Double Bed Blanket",
         pricePkr = 3599,
-        category = ProductCategory.BLANKETS.label,
+        category = ProductCategories.BLANKETS,
         fabric = "Fleece",
         size = "Double Bed, 90 inches",
         shortSpec = "Double Bed • 90 in • 3D Embossed • Red",
@@ -154,7 +159,7 @@ object ProductCatalog {
             ProductSpec("Color", "Red"),
           ),
         description =
-          "Make a bold, luxurious statement in your bedroom with our 3D Panel Fleece Embossed Double Bed Blanket. Featuring deeply sculpted embossed relief panels in rich red fleece at a generous 90-inch double bed size, it combines plush thermal comfort with premium heirloom texture.",
+          "Sculpted 3D panel embossed double bed blanket in rich red fleece.",
         imageKey = "blanket_embossed_red",
         imageRes = R.drawable.img_blanket_embossed_red_1795368929457,
         inStock = true,
@@ -164,7 +169,7 @@ object ProductCatalog {
         id = "suit_boski_plain",
         name = "Men's Unstitched Boski Plain Suit",
         pricePkr = 1999,
-        category = ProductCategory.MENS_SUITS.label,
+        category = ProductCategories.MENS_SUITS,
         fabric = "Boski fabric",
         size = "Unstitched",
         shortSpec = "Unstitched • Boski Fabric • Plain",
@@ -175,7 +180,7 @@ object ProductCatalog {
             ProductSpec("Style", "Plain"),
           ),
         description =
-          "Classic Pakistani elegance begins with our Men's Unstitched Boski Plain Suit. Woven with the signature smooth sheen and graceful fall of Boski fabric, this plain unstitched suit is ideal for formal gatherings, Eid wear, and effortless tailored shalwar kameez craftsmanship.",
+          "Classic Men's Unstitched Boski Plain Suit with smooth sheen and graceful fall.",
         imageKey = "suit_boski",
         imageRes = R.drawable.img_suit_boski_1795368943150,
         inStock = true,
@@ -185,7 +190,7 @@ object ProductCatalog {
         id = "suit_wool_plain_brown",
         name = "Men's Unstitched Wool Plain Suit",
         pricePkr = 2299,
-        category = ProductCategory.MENS_SUITS.label,
+        category = ProductCategories.MENS_SUITS,
         fabric = "Wool",
         size = "Unstitched, 4 meter cutting",
         shortSpec = "Unstitched • Wool • Brown • 4m Cutting",
@@ -198,7 +203,7 @@ object ProductCatalog {
             ProductSpec("Cutting", "4 meter cutting"),
           ),
         description =
-          "Stay warm and sharp through winter with the Men's Unstitched Wool Plain Suit in rich brown. Supplied in a full 4 meter cutting of soft, insulating plain wool suiting, it tailors cleanly into a structured, dignified winter shalwar kameez or waistcoat ensemble.",
+          "Warm Men's Unstitched Wool Plain Suit in rich brown with 4 meter cutting.",
         imageKey = "suit_wool_brown",
         imageRes = R.drawable.img_suit_wool_brown_1795368944258,
         inStock = true,
@@ -208,7 +213,7 @@ object ProductCatalog {
         id = "suit_wash_and_wear_blue",
         name = "Men's Unstitched Wash And Wear Plain Suit",
         pricePkr = 2999,
-        category = ProductCategory.MENS_SUITS.label,
+        category = ProductCategories.MENS_SUITS,
         fabric = "Wash and Wear",
         size = "Unstitched, 4 meter cutting",
         shortSpec = "Unstitched • Wash and Wear • Blue • 4m",
@@ -221,7 +226,7 @@ object ProductCatalog {
             ProductSpec("Cutting", "4 meter cutting"),
           ),
         description =
-          "Engineered for everyday polish with minimal ironing, the Men's Unstitched Wash And Wear Plain Suit in deep blue offers crisp drape and crease resistance from morning to evening. Includes a generous 4 meter cutting ready for custom stitching.",
+          "Crease-resistant Men's Unstitched Wash And Wear Plain Suit in deep blue.",
         imageKey = "suit_washwear_blue",
         imageRes = R.drawable.img_suit_washwear_blue_1795368945567,
         inStock = true,
@@ -231,7 +236,7 @@ object ProductCatalog {
         id = "suit_cotton_plain",
         name = "Men's Unstitched Cotton Plain Suit",
         pricePkr = 3099,
-        category = ProductCategory.MENS_SUITS.label,
+        category = ProductCategories.MENS_SUITS,
         fabric = "Cotton",
         size = "Unstitched, 4.5 meter cutting",
         shortSpec = "Unstitched • Cotton • Plain • 4.5m Cutting",
@@ -243,7 +248,7 @@ object ProductCatalog {
             ProductSpec("Cutting", "4.5 meter cutting"),
           ),
         description =
-          "Breathable, crisp, and tailored for all-day comfort, our Men's Unstitched Cotton Plain Suit features premium natural cotton fabric in an extra-generous 4.5 meter cutting. Ideal for bespoke shalwar kameez stitching with clean structure and soft skin feel.",
+          "Breathable Men's Unstitched Cotton Plain Suit in generous 4.5 meter cutting.",
         imageKey = "suit_cotton",
         imageRes = R.drawable.img_suit_cotton_1795368945913,
         inStock = true,

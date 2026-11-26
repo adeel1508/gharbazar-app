@@ -35,13 +35,17 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
@@ -49,6 +53,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -57,6 +62,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -84,7 +90,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,67 +106,43 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.AdminOrdersLoadState
 import com.example.data.CatalogSyncStatus
-import com.example.data.CloudinaryUploader
-import com.example.data.GHARBAZAR_ADMIN_EMAIL
 import com.example.data.ProductCatalog
 import com.example.model.ConfirmedOrder
 import com.example.model.OrderStatus
 import com.example.model.Product
-import com.example.model.ProductCategory
+import com.example.model.ProductCategories
+import com.example.model.formatOrderTimeForDisplay
 import com.example.model.formatPkr
+import com.example.model.isValidRemoteImageUrl
 import com.example.security.PasswordActionResult
 import com.example.ui.components.CachedProductImage
+import com.example.viewmodel.ManualUpdateDialogState
+import com.example.viewmodel.PickedPhotoItem
+import com.example.viewmodel.PickedPhotoStatus
 import com.example.viewmodel.StoreUiState
-import java.text.SimpleDateFormat
-import java.util.Date
-import kotlinx.coroutines.launch
-import java.util.Locale
+
+private const val DEFAULT_ADMIN_EMAIL = "adeel.arif0786@gmail.com"
 
 private enum class AdminDashboardTab(val label: String) {
   PRODUCTS("Products"),
   ORDERS("Orders"),
 }
 
-/**
- * Parses the admin editor's "Photo URLs (one per line)" field: one URL per
- * line, blank lines ignored, duplicates removed, order kept — the first
- * line is the cover photo.
- */
-internal fun parseImageUrls(text: String): List<String> =
-  text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
-
-/**
- * True when the string is a remote photo URL (http/https) that can be
- * stored in Firestore and shown on the website. Device-local URIs
- * (content://, file://) are NOT remote — a photo picked from the phone
- * gallery is only a local link and is never uploaded anywhere.
- */
-internal fun isRemotePhotoUrl(url: String?): Boolean =
-  url != null && (url.startsWith("http://") || url.startsWith("https://"))
-
-/**
- * Builds the gallery saved with a product: the existing remote cover
- * first (when it is a remote URL), then the URLs typed in the
- * "Photo URLs" field. A photo picked from the phone gallery is a
- * device-local content:// URI — it is deliberately left out here and
- * never reaches Firestore; when one was uploaded, the caller prepends
- * the returned https URL instead. The same goes for any non-remote line
- * typed in the URLs field.
- */
-internal fun buildAdminGallery(imageUri: String?, imageUrlsText: String): List<String> =
-  buildList {
-    imageUri?.takeIf { isRemotePhotoUrl(it) }?.let { add(it) }
-    addAll(parseImageUrls(imageUrlsText).filter { isRemotePhotoUrl(it) })
-  }.distinct()
-
 @Composable
 fun AdminRouteScreen(
   uiState: StoreUiState,
   onBackToStore: () -> Unit,
+  onSignInCloud: (email: String, password: String) -> Unit,
+  onSignOutCloud: () -> Unit,
   onSetupPassword: (String, String) -> PasswordActionResult,
   onUnlock: (String) -> Boolean,
   onChangePassword: (String, String, String) -> PasswordActionResult,
+  onStartPickedPhotoUpload: (String) -> Unit,
+  onRetryPickedPhotoUpload: (String) -> Unit,
+  onRemovePickedPhoto: (String) -> Unit,
+  onClearPickedPhotos: () -> Unit,
   onSaveProduct: (
     editingId: String?,
     name: String,
@@ -171,80 +152,117 @@ fun AdminRouteScreen(
     size: String,
     description: String,
     imageKey: String,
-    imageUri: String?,
-    imageUris: List<String>,
+    typedImageUrls: List<String>,
+    uploadedImageUrls: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
+    onResult: (Result<Unit>) -> Unit,
   ) -> Unit,
   onDeleteProduct: (String) -> Unit,
-  onUpdateOrderStatus: (String, OrderStatus) -> Unit,
-  onClearNotice: () -> Unit,
-  onAdminSignIn: (String) -> Unit,
-  onAdminSignOut: () -> Unit,
-  /**
-   * Re-subscribes to the cloud orders feed. Called ONLY when the admin
-   * opens the Orders tab, or taps the Refresh button there — never on
-   * startup and never on an auth-state change.
-   */
+  onOrdersTabOpened: () -> Unit,
   onRefreshOrders: () -> Unit,
-  /**
-   * Manual update check. Called ONLY when the admin taps the
-   * "Check for Updates" button in the admin panel — never on startup.
-   * (v1.0.14 crashed on launch when an update was pending because the
-   * check ran automatically at startup and the dialog popped up on its
-   * own; that automatic check is gone.)
-   */
+  onUpdateOrderStatus: (String, OrderStatus) -> Unit,
   onCheckForUpdates: () -> Unit,
+  onDismissUpdateDialog: () -> Unit,
+  onClearNotice: () -> Unit,
 ) {
   BackHandler(onBack = onBackToStore)
 
-  // Security gate (v1.0.8): when a cloud catalogue is configured, the
-  // Firebase admin sign-in comes FIRST — before any local password setup
-  // or unlock. Otherwise anyone who installs the app could set their own
-  // local password and walk into the admin panel. The local password stays
-  // as a second, device-level lock after the cloud sign-in.
-  if (uiState.isCloudConfigured && !uiState.isAdminSignedIn) {
-    AdminCloudSignInScreen(
-      onBack = onBackToStore,
-      authError = uiState.adminAuthError,
-      onSignIn = onAdminSignIn,
-    )
-  } else if (!uiState.isAdminPasswordSet) {
-    AdminPasswordSetupScreen(
-      onBack = onBackToStore,
-      onSetupPassword = onSetupPassword,
-    )
-  } else if (!uiState.isAdminUnlocked) {
-    AdminPasswordLoginScreen(
-      onBack = onBackToStore,
-      onUnlock = onUnlock,
-    )
-  } else {
-    AdminDashboardScreen(
-      uiState = uiState,
-      onExitAdmin = onBackToStore,
-      onChangePassword = onChangePassword,
-      onSaveProduct = onSaveProduct,
-      onDeleteProduct = onDeleteProduct,
-      onUpdateOrderStatus = onUpdateOrderStatus,
-      onClearNotice = onClearNotice,
-      onAdminSignIn = onAdminSignIn,
-      onAdminSignOut = onAdminSignOut,
-      onRefreshOrders = onRefreshOrders,
-      onCheckForUpdates = onCheckForUpdates,
-    )
+  // Two-step Admin Gate:
+  // Step 1: Firebase Cloud Sign-In FIRST (required for Firestore admin writes & orders reads)
+  // Step 2: Device-local owner password SECOND
+  when {
+    uiState.cloudAdminEmail.isNullOrBlank() -> {
+      AdminCloudSignInScreen(
+        isBusy = uiState.isCloudAuthBusy,
+        errorMessage = uiState.cloudAuthError,
+        onBack = onBackToStore,
+        onSignIn = onSignInCloud,
+      )
+    }
+    !uiState.isAdminPasswordChecked -> {
+      AdminCheckingGateScreen(onBack = onBackToStore)
+    }
+    !uiState.isAdminPasswordSet -> {
+      AdminPasswordSetupScreen(
+        cloudEmail = uiState.cloudAdminEmail,
+        onBack = onBackToStore,
+        onSignOutCloud = onSignOutCloud,
+        onSetupPassword = onSetupPassword,
+      )
+    }
+    !uiState.isAdminUnlocked -> {
+      AdminPasswordLoginScreen(
+        cloudEmail = uiState.cloudAdminEmail,
+        onBack = onBackToStore,
+        onSignOutCloud = onSignOutCloud,
+        onUnlock = onUnlock,
+      )
+    }
+    else -> {
+      AdminDashboardScreen(
+        uiState = uiState,
+        onExitAdmin = onBackToStore,
+        onSignOutCloud = onSignOutCloud,
+        onChangePassword = onChangePassword,
+        onStartPickedPhotoUpload = onStartPickedPhotoUpload,
+        onRetryPickedPhotoUpload = onRetryPickedPhotoUpload,
+        onRemovePickedPhoto = onRemovePickedPhoto,
+        onClearPickedPhotos = onClearPickedPhotos,
+        onSaveProduct = onSaveProduct,
+        onDeleteProduct = onDeleteProduct,
+        onOrdersTabOpened = onOrdersTabOpened,
+        onRefreshOrders = onRefreshOrders,
+        onUpdateOrderStatus = onUpdateOrderStatus,
+        onCheckForUpdates = onCheckForUpdates,
+        onDismissUpdateDialog = onDismissUpdateDialog,
+        onClearNotice = onClearNotice,
+      )
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdminCheckingGateScreen(onBack: () -> Unit) {
+  Scaffold(
+    containerColor = MaterialTheme.colorScheme.background,
+    topBar = {
+      TopAppBar(
+        title = { Text("Seller / Admin") },
+        navigationIcon = {
+          IconButton(onClick = onBack, modifier = Modifier.minimumInteractiveComponentSize()) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+          }
+        },
+        colors =
+          TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.background
+          ),
+      )
+    },
+  ) { innerPadding ->
+    Box(
+      modifier = Modifier.fillMaxSize().padding(innerPadding),
+      contentAlignment = Alignment.Center,
+    ) {
+      CircularProgressIndicator()
+    }
   }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AdminCloudSignInScreen(
+  isBusy: Boolean,
+  errorMessage: String?,
   onBack: () -> Unit,
-  authError: String?,
-  onSignIn: (String) -> Unit,
+  onSignIn: (email: String, password: String) -> Unit,
 ) {
+  var email by remember { mutableStateOf(DEFAULT_ADMIN_EMAIL) }
   var password by remember { mutableStateOf("") }
   var showPassword by remember { mutableStateOf(false) }
+  var localError by remember { mutableStateOf<String?>(null) }
 
   Scaffold(
     containerColor = MaterialTheme.colorScheme.background,
@@ -264,12 +282,18 @@ private fun AdminCloudSignInScreen(
     },
   ) { innerPadding ->
     Box(
-      modifier = Modifier.fillMaxSize().padding(innerPadding).padding(20.dp),
+      modifier =
+        Modifier.fillMaxSize()
+          .padding(innerPadding)
+          .padding(20.dp)
+          .verticalScroll(rememberScrollState()),
       contentAlignment = Alignment.Center,
     ) {
       Card(
         modifier =
-          Modifier.widthIn(max = 480.dp).fillMaxWidth().testTag("admin_cloud_signin_screen"),
+          Modifier.widthIn(max = 480.dp)
+            .fillMaxWidth()
+            .testTag("admin_cloud_signin_screen"),
         colors =
           CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
@@ -290,7 +314,7 @@ private fun AdminCloudSignInScreen(
             contentAlignment = Alignment.Center,
           ) {
             Icon(
-              imageVector = Icons.Filled.CloudDone,
+              imageVector = Icons.Filled.Email,
               contentDescription = null,
               tint = MaterialTheme.colorScheme.primary,
               modifier = Modifier.size(28.dp),
@@ -298,32 +322,45 @@ private fun AdminCloudSignInScreen(
           }
 
           Text(
-            text = "Cloud Admin Sign In",
+            text = "Step 1: Admin Cloud Sign In",
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
           )
 
           Text(
             text =
-              "Only the GharBazar account can open the admin panel. Sign in with your account password first — the device admin password comes after.",
+              "Sign in with your GharBazar Firebase admin account to manage live products and view customer orders.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
           )
 
-          Text(
-            text = "Account: $GHARBAZAR_ADMIN_EMAIL",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
+          OutlinedTextField(
+            value = email,
+            onValueChange = {
+              email = it
+              localError = null
+            },
+            label = { Text("Admin Email") },
+            singleLine = true,
+            enabled = !isBusy,
+            keyboardOptions =
+              KeyboardOptions(
+                keyboardType = KeyboardType.Email,
+                imeAction = ImeAction.Next,
+              ),
+            modifier = Modifier.fillMaxWidth().testTag("admin_cloud_email_input"),
           )
 
           OutlinedTextField(
             value = password,
-            onValueChange = { password = it },
-            label = { Text("Account Password") },
+            onValueChange = {
+              password = it
+              localError = null
+            },
+            label = { Text("Firebase Account Password") },
             singleLine = true,
-            isError = authError != null,
-            supportingText = authError?.let { msg -> { Text(msg) } },
+            enabled = !isBusy,
             visualTransformation =
               if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
@@ -340,18 +377,44 @@ private fun AdminCloudSignInScreen(
                 keyboardType = KeyboardType.Password,
                 imeAction = ImeAction.Done,
               ),
-            modifier = Modifier.fillMaxWidth().testTag("admin_cloud_signin_password_input"),
+            modifier = Modifier.fillMaxWidth().testTag("admin_cloud_password_input"),
           )
 
+          val combinedError = localError ?: errorMessage
+          if (!combinedError.isNullOrBlank()) {
+            Text(
+              text = combinedError,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
+              modifier = Modifier.fillMaxWidth(),
+            )
+          }
+
           Button(
-            onClick = { onSignIn(password) },
-            enabled = password.isNotBlank(),
+            onClick = {
+              when {
+                email.trim().isEmpty() -> localError = "Please enter your admin email."
+                password.isEmpty() -> localError = "Please enter your Firebase password."
+                else -> onSignIn(email, password)
+              }
+            },
+            enabled = !isBusy,
             modifier =
               Modifier.fillMaxWidth()
                 .height(50.dp)
                 .testTag("admin_cloud_signin_button"),
           ) {
-            Text("Sign in to Cloud Admin")
+            if (isBusy) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary,
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+              Text("Signing In…")
+            } else {
+              Text("Sign In to Cloud")
+            }
           }
         }
       }
@@ -362,7 +425,9 @@ private fun AdminCloudSignInScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AdminPasswordSetupScreen(
+  cloudEmail: String,
   onBack: () -> Unit,
+  onSignOutCloud: () -> Unit,
   onSetupPassword: (String, String) -> PasswordActionResult,
 ) {
   var password by remember { mutableStateOf("") }
@@ -388,7 +453,11 @@ private fun AdminPasswordSetupScreen(
     },
   ) { innerPadding ->
     Box(
-      modifier = Modifier.fillMaxSize().padding(innerPadding).padding(20.dp),
+      modifier =
+        Modifier.fillMaxSize()
+          .padding(innerPadding)
+          .padding(20.dp)
+          .verticalScroll(rememberScrollState()),
       contentAlignment = Alignment.Center,
     ) {
       Card(
@@ -421,14 +490,14 @@ private fun AdminPasswordSetupScreen(
           }
 
           Text(
-            text = "Set your admin password",
+            text = "Step 2: Set your admin password",
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
           )
 
           Text(
             text =
-              "Create a private password (minimum 6 characters) to protect your Seller / Admin panel. It is stored securely as an encrypted hash on this device and cannot be recovered if forgotten.",
+              "Signed in to cloud as $cloudEmail. Create a private local password (minimum 6 characters) to lock this Seller / Admin panel on your phone.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -502,6 +571,10 @@ private fun AdminPasswordSetupScreen(
           ) {
             Text("Save Password & Open Admin")
           }
+
+          TextButton(onClick = onSignOutCloud) {
+            Text("Sign out of $cloudEmail")
+          }
         }
       }
     }
@@ -511,7 +584,9 @@ private fun AdminPasswordSetupScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AdminPasswordLoginScreen(
+  cloudEmail: String,
   onBack: () -> Unit,
+  onSignOutCloud: () -> Unit,
   onUnlock: (String) -> Boolean,
 ) {
   var password by remember { mutableStateOf("") }
@@ -536,7 +611,11 @@ private fun AdminPasswordLoginScreen(
     },
   ) { innerPadding ->
     Box(
-      modifier = Modifier.fillMaxSize().padding(innerPadding).padding(20.dp),
+      modifier =
+        Modifier.fillMaxSize()
+          .padding(innerPadding)
+          .padding(20.dp)
+          .verticalScroll(rememberScrollState()),
       contentAlignment = Alignment.Center,
     ) {
       Card(
@@ -569,13 +648,13 @@ private fun AdminPasswordLoginScreen(
           }
 
           Text(
-            text = "Seller / Admin Sign In",
+            text = "Step 2: Unlock Admin Panel",
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
           )
 
           Text(
-            text = "Enter your admin password to manage GharBazar products and stock.",
+            text = "Cloud account $cloudEmail signed in. Enter your device admin password to continue.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -624,6 +703,10 @@ private fun AdminPasswordLoginScreen(
           ) {
             Text("Unlock Admin Panel")
           }
+
+          TextButton(onClick = onSignOutCloud) {
+            Text("Sign out of $cloudEmail")
+          }
         }
       }
     }
@@ -635,7 +718,12 @@ private fun AdminPasswordLoginScreen(
 private fun AdminDashboardScreen(
   uiState: StoreUiState,
   onExitAdmin: () -> Unit,
+  onSignOutCloud: () -> Unit,
   onChangePassword: (String, String, String) -> PasswordActionResult,
+  onStartPickedPhotoUpload: (String) -> Unit,
+  onRetryPickedPhotoUpload: (String) -> Unit,
+  onRemovePickedPhoto: (String) -> Unit,
+  onClearPickedPhotos: () -> Unit,
   onSaveProduct: (
     editingId: String?,
     name: String,
@@ -645,19 +733,21 @@ private fun AdminDashboardScreen(
     size: String,
     description: String,
     imageKey: String,
-    imageUri: String?,
-    imageUris: List<String>,
+    typedImageUrls: List<String>,
+    uploadedImageUrls: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
+    onResult: (Result<Unit>) -> Unit,
   ) -> Unit,
   onDeleteProduct: (String) -> Unit,
-  onUpdateOrderStatus: (String, OrderStatus) -> Unit,
-  onClearNotice: () -> Unit,
-  onAdminSignIn: (String) -> Unit,
-  onAdminSignOut: () -> Unit,
+  onOrdersTabOpened: () -> Unit,
   onRefreshOrders: () -> Unit,
+  onUpdateOrderStatus: (String, OrderStatus) -> Unit,
   onCheckForUpdates: () -> Unit,
+  onDismissUpdateDialog: () -> Unit,
+  onClearNotice: () -> Unit,
 ) {
+  val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedTab by remember { mutableStateOf(AdminDashboardTab.PRODUCTS) }
   var showEditorForProduct by remember { mutableStateOf<Product?>(null) }
@@ -673,6 +763,13 @@ private fun AdminDashboardScreen(
     }
   }
 
+  // Manual/on-demand orders loading: fetch ONLY when the Admin opens the Orders tab.
+  LaunchedEffect(selectedTab) {
+    if (selectedTab == AdminDashboardTab.ORDERS) {
+      onOrdersTabOpened()
+    }
+  }
+
   Scaffold(
     containerColor = MaterialTheme.colorScheme.background,
     snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -684,7 +781,7 @@ private fun AdminDashboardScreen(
               Text("Seller / Admin Panel", style = MaterialTheme.typography.titleLarge)
               Text(
                 text =
-                  "${uiState.allProducts.size} products • ${uiState.adminOrders.size} orders",
+                  "${uiState.allProducts.size} products • ${uiState.loadedAdminOrdersCount} orders",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
@@ -709,19 +806,7 @@ private fun AdminDashboardScreen(
                 modifier = Modifier.size(18.dp),
               )
               Spacer(modifier = Modifier.width(4.dp))
-              Text("Change Password")
-            }
-            TextButton(
-              onClick = onCheckForUpdates,
-              modifier = Modifier.testTag("admin_check_for_updates_button"),
-            ) {
-              Icon(
-                imageVector = Icons.Filled.SystemUpdate,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text("Check for Updates")
+              Text("Password")
             }
           },
           colors =
@@ -738,7 +823,7 @@ private fun AdminDashboardScreen(
             val count =
               when (tab) {
                 AdminDashboardTab.PRODUCTS -> uiState.allProducts.size
-                AdminDashboardTab.ORDERS -> uiState.adminOrders.size
+                AdminDashboardTab.ORDERS -> uiState.loadedAdminOrdersCount
               }
             val tabTag =
               when (tab) {
@@ -747,15 +832,7 @@ private fun AdminDashboardScreen(
               }
             Tab(
               selected = selectedTab == tab,
-              onClick = {
-                // Orders are re-fetched ONLY here, when the admin opens the
-                // Orders tab — never on startup and never when the sign-in
-                // state changes. A listener attached before sign-in died
-                // with PERMISSION_DENIED, so opening the tab is what
-                // re-subscribes it (see OrderRepository.refreshOrders).
-                if (tab == AdminDashboardTab.ORDERS) onRefreshOrders()
-                selectedTab = tab
-              },
+              onClick = { selectedTab = tab },
               text = { Text("${tab.label} ($count)") },
               modifier = Modifier.testTag(tabTag),
             )
@@ -767,6 +844,7 @@ private fun AdminDashboardScreen(
       if (selectedTab == AdminDashboardTab.PRODUCTS) {
         FloatingActionButton(
           onClick = {
+            onClearPickedPhotos()
             showEditorForProduct = null
             isCreatingNew = true
           },
@@ -789,15 +867,12 @@ private fun AdminDashboardScreen(
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           item(key = "sync_status") {
-            AdminCloudSyncCard(syncStatus = uiState.syncStatus)
-          }
-
-          item(key = "admin_auth") {
-            AdminFirebaseSignInCard(
-              isSignedIn = uiState.isAdminSignedIn,
-              authError = uiState.adminAuthError,
-              onSignIn = onAdminSignIn,
-              onSignOut = onAdminSignOut,
+            AdminCloudSyncCard(
+              syncStatus = uiState.syncStatus,
+              cloudAdminEmail = uiState.cloudAdminEmail.orEmpty(),
+              isCheckingForUpdates = uiState.isCheckingForUpdates,
+              onCheckForUpdates = onCheckForUpdates,
+              onSignOut = onSignOutCloud,
             )
           }
 
@@ -817,9 +892,10 @@ private fun AdminDashboardScreen(
                 ) {
                   Text("No products in catalogue", style = MaterialTheme.typography.titleMedium)
                   Text(
-                    "Tap + to add a product in any category.",
+                    "Tap + to add a blanket, men's unstitched suit, or any custom category.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                   )
                 }
               }
@@ -829,6 +905,7 @@ private fun AdminDashboardScreen(
               AdminProductRowCard(
                 product = product,
                 onEdit = {
+                  onClearPickedPhotos()
                   isCreatingNew = false
                   showEditorForProduct = product
                 },
@@ -845,85 +922,131 @@ private fun AdminDashboardScreen(
           contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
           verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-          item(key = "orders_sync_status") {
-            AdminCloudSyncCard(syncStatus = uiState.syncStatus)
-          }
-
-          item(key = "admin_auth_orders") {
-            AdminFirebaseSignInCard(
-              isSignedIn = uiState.isAdminSignedIn,
-              authError = uiState.adminAuthError,
-              onSignIn = onAdminSignIn,
-              onSignOut = onAdminSignOut,
+          item(key = "orders_header_controls") {
+            AdminOrdersHeaderRow(
+              ordersState = uiState.adminOrdersState,
+              onRefresh = onRefreshOrders,
             )
           }
 
-          // Manual refresh: the orders listener attached before admin
-          // sign-in died with PERMISSION_DENIED, so orders only appear
-          // after a re-subscribe — which happens when this tab is opened
-          // or when this button is tapped. (If the admin signed in while
-          // already on this tab, this button is the way to load orders.)
-          item(key = "orders_refresh") {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              Text(
-                text =
-                  if (uiState.isAdminSignedIn) "Orders sync here automatically (newest first)."
-                  else "Sign in above to load orders.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-              )
-              OutlinedButton(
-                onClick = onRefreshOrders,
-                modifier = Modifier.testTag("admin_refresh_orders_button"),
-              ) {
-                Text("Refresh")
-              }
-            }
-          }
-
-          if (uiState.adminOrders.isEmpty()) {
-            item(key = "empty_orders") {
-              Card(
-                modifier = Modifier.fillMaxWidth().testTag("admin_orders_empty"),
-                colors =
-                  CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                  ),
-              ) {
-                Column(
-                  modifier = Modifier.fillMaxWidth().padding(28.dp),
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  verticalArrangement = Arrangement.spacedBy(8.dp),
+          when (val ordersState = uiState.adminOrdersState) {
+            AdminOrdersLoadState.Idle,
+            AdminOrdersLoadState.Loading -> {
+              item(key = "orders_loading") {
+                Card(
+                  modifier = Modifier.fillMaxWidth().testTag("admin_orders_loading"),
+                  colors =
+                    CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
                 ) {
-                  Icon(
-                    imageVector = Icons.Filled.ReceiptLong,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(36.dp),
-                  )
-                  Text("No COD orders yet", style = MaterialTheme.typography.titleMedium)
-                  Text(
-                    "Guest Cash on Delivery orders placed at checkout sync here automatically (newest first).",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                  )
+                  Column(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                  ) {
+                    CircularProgressIndicator()
+                    Text(
+                      text = "Loading COD orders from Firestore…",
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
                 }
               }
             }
-          } else {
-            items(items = uiState.adminOrders, key = { it.orderNumber }) { order ->
-              AdminOrderCard(
-                order = order,
-                onUpdateStatus = { newStatus ->
-                  onUpdateOrderStatus(order.orderNumber, newStatus)
-                },
-              )
+
+            is AdminOrdersLoadState.Error -> {
+              item(key = "orders_error") {
+                Card(
+                  modifier = Modifier.fillMaxWidth().testTag("admin_orders_error"),
+                  colors =
+                    CardDefaults.cardColors(
+                      containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                    ),
+                ) {
+                  Column(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.CloudOff,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.error,
+                      modifier = Modifier.size(36.dp),
+                    )
+                    Text(
+                      text = "Couldn't load orders, tap Refresh",
+                      style = MaterialTheme.typography.titleMedium,
+                      fontWeight = FontWeight.Bold,
+                      textAlign = TextAlign.Center,
+                    )
+                    Text(
+                      text = ordersState.message,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onErrorContainer,
+                      textAlign = TextAlign.Center,
+                    )
+                    Button(
+                      onClick = onRefreshOrders,
+                      modifier =
+                        Modifier.minimumInteractiveComponentSize()
+                          .testTag("admin_orders_error_retry_button"),
+                    ) {
+                      Icon(imageVector = Icons.Filled.Refresh, contentDescription = null)
+                      Spacer(modifier = Modifier.width(6.dp))
+                      Text("Refresh")
+                    }
+                  }
+                }
+              }
+            }
+
+            is AdminOrdersLoadState.Loaded -> {
+              if (ordersState.orders.isEmpty()) {
+                item(key = "empty_orders") {
+                  Card(
+                    modifier = Modifier.fillMaxWidth().testTag("admin_orders_empty"),
+                    colors =
+                      CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                      ),
+                  ) {
+                    Column(
+                      modifier = Modifier.fillMaxWidth().padding(28.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.ReceiptLong,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp),
+                      )
+                      Text("No COD orders yet", style = MaterialTheme.typography.titleMedium)
+                      Text(
+                        "Tap Refresh anytime to fetch new Cash on Delivery orders.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                      )
+                    }
+                  }
+                }
+              } else {
+                items(
+                  items = ordersState.orders,
+                  key = { it.documentId.ifBlank { it.orderNumber } },
+                ) { order ->
+                  AdminOrderCard(
+                    order = order,
+                    onUpdateStatus = { newStatus ->
+                      onUpdateOrderStatus(order.documentId.ifBlank { order.orderNumber }, newStatus)
+                    },
+                  )
+                }
+              }
             }
           }
         }
@@ -934,11 +1057,29 @@ private fun AdminDashboardScreen(
   if (isCreatingNew || showEditorForProduct != null) {
     AdminProductEditorDialog(
       initialProduct = showEditorForProduct,
+      pickedPhotos = uiState.pickedPhotos,
+      isSaving = uiState.isProductSaving,
+      onStartPickedPhotoUpload = onStartPickedPhotoUpload,
+      onRetryPickedPhotoUpload = onRetryPickedPhotoUpload,
+      onRemovePickedPhoto = onRemovePickedPhoto,
       onDismiss = {
+        onClearPickedPhotos()
         isCreatingNew = false
         showEditorForProduct = null
       },
-      onSave = { name, price, category, fabric, size, desc, imgKey, imgUri, imgUris, inStock, stockQty ->
+      onSave = {
+        name,
+        price,
+        category,
+        fabric,
+        size,
+        desc,
+        imgKey,
+        typedUrls,
+        uploadedUrls,
+        inStock,
+        stockQty,
+        onSaveDone ->
         onSaveProduct(
           showEditorForProduct?.id,
           name,
@@ -948,13 +1089,18 @@ private fun AdminDashboardScreen(
           size,
           desc,
           imgKey,
-          imgUri,
-          imgUris,
+          typedUrls,
+          uploadedUrls,
           inStock,
           stockQty,
-        )
-        isCreatingNew = false
-        showEditorForProduct = null
+        ) { result ->
+          if (result.isSuccess) {
+            onClearPickedPhotos()
+            isCreatingNew = false
+            showEditorForProduct = null
+          }
+          onSaveDone(result)
+        }
       },
     )
   }
@@ -997,27 +1143,56 @@ private fun AdminDashboardScreen(
       onChangePassword = onChangePassword,
     )
   }
+
+  uiState.manualUpdateDialogState?.let { dialogState ->
+    ManualUpdateResultDialog(
+      state = dialogState,
+      onOpenUrl = { url ->
+        runCatching {
+          val intent =
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+          context.startActivity(intent)
+        }
+        onDismissUpdateDialog()
+      },
+      onDismiss = onDismissUpdateDialog,
+    )
+  }
 }
 
 @Composable
-private fun AdminCloudSyncCard(syncStatus: CatalogSyncStatus) {
+private fun AdminCloudSyncCard(
+  syncStatus: CatalogSyncStatus,
+  cloudAdminEmail: String,
+  isCheckingForUpdates: Boolean,
+  onCheckForUpdates: () -> Unit,
+  onSignOut: () -> Unit,
+) {
   val (title, subtitle, isLive) =
     when (syncStatus) {
+      CatalogSyncStatus.Loading ->
+        Triple(
+          "Connecting to Firestore…",
+          "Syncing product catalogue with GharBazar cloud.",
+          true,
+        )
       CatalogSyncStatus.SyncedLive ->
         Triple(
-          "Firestore Cloud Sync Active (Spark Plan)",
-          "Realtime updates are synced with Cloud Firestore.",
+          "Firestore Cloud Sync Active",
+          "Realtime product updates are live.",
           true,
         )
       CatalogSyncStatus.OfflineCached ->
         Triple(
           "Offline Cache Active",
-          "Showing cached Firestore catalogue; changes sync automatically when online.",
+          "Showing cached Firestore catalogue; changes sync when online.",
           true,
         )
-      is CatalogSyncStatus.LocalFallback ->
+      is CatalogSyncStatus.Error ->
         Triple(
-          "Local Catalogue Mode (Cloud Sync Not Linked)",
+          "Cloud Sync Error",
           syncStatus.message,
           false,
         )
@@ -1029,69 +1204,8 @@ private fun AdminCloudSyncCard(syncStatus: CatalogSyncStatus) {
       CardDefaults.cardColors(
         containerColor =
           if (isLive) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.65f)
-          else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+          else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
       ),
-    shape = MaterialTheme.shapes.medium,
-  ) {
-    Row(
-      modifier = Modifier.padding(14.dp),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Icon(
-        imageVector = if (isLive) Icons.Filled.CloudDone else Icons.Filled.CloudOff,
-        contentDescription = null,
-        tint =
-          if (isLive) MaterialTheme.colorScheme.tertiary
-          else MaterialTheme.colorScheme.secondary,
-      )
-      Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-          text = title,
-          style = MaterialTheme.typography.titleSmall,
-          fontWeight = FontWeight.Bold,
-        )
-        Text(
-          text = subtitle,
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      }
-    }
-  }
-}
-
-/**
- * Firebase sign-in for cloud admin work. This is separate from the local
- * admin password above it: the password only unlocks this panel on this
- * phone, while this sign-in proves to Firestore that the user is the admin
- * (adeel.arif0786@gmail.com), which the security rules require before any
- * product add/edit/delete or order-status change is accepted. The session
- * persists, so the owner signs in once.
- */
-@Composable
-private fun AdminFirebaseSignInCard(
-  isSignedIn: Boolean,
-  authError: String?,
-  onSignIn: (String) -> Unit,
-  onSignOut: () -> Unit,
-) {
-  var password by remember { mutableStateOf("") }
-  var showPassword by remember { mutableStateOf(false) }
-
-  LaunchedEffect(isSignedIn) {
-    if (isSignedIn) {
-      password = ""
-    }
-  }
-
-  Card(
-    modifier = Modifier.fillMaxWidth().testTag("admin_firebase_signin_card"),
-    colors =
-      CardDefaults.cardColors(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
-      ),
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     shape = MaterialTheme.shapes.medium,
   ) {
     Column(
@@ -1103,83 +1217,115 @@ private fun AdminFirebaseSignInCard(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Icon(
-          imageVector = if (isSignedIn) Icons.Filled.CloudDone else Icons.Filled.Lock,
+          imageVector = if (isLive) Icons.Filled.CloudDone else Icons.Filled.CloudOff,
           contentDescription = null,
-          tint = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.size(24.dp),
+          tint =
+            if (isLive) MaterialTheme.colorScheme.tertiary
+            else MaterialTheme.colorScheme.error,
         )
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
           Text(
-            text =
-              if (isSignedIn) "Signed in to Cloud Admin" else "Cloud Admin Sign In",
+            text = title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
           )
           Text(
-            text =
-              if (isSignedIn) {
-                "Signed in as $GHARBAZAR_ADMIN_EMAIL — product and order changes are unlocked."
-              } else {
-                "Sign in once with your GharBazar account to add, edit or delete products and to see orders here."
-              },
+            text = subtitle,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
-        }
-        if (isSignedIn) {
-          TextButton(
-            onClick = onSignOut,
-            modifier = Modifier.testTag("admin_firebase_signout_button"),
-          ) {
-            Text("Sign out")
+          if (cloudAdminEmail.isNotBlank()) {
+            Text(
+              text = "Signed in: $cloudAdminEmail",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.primary,
+              fontWeight = FontWeight.SemiBold,
+            )
           }
         }
       }
 
-      if (!isSignedIn) {
-        Text(
-          text = "Account: $GHARBAZAR_ADMIN_EMAIL",
-          style = MaterialTheme.typography.bodyMedium,
-          fontWeight = FontWeight.SemiBold,
-        )
-        OutlinedTextField(
-          value = password,
-          onValueChange = {
-            password = it
-          },
-          label = { Text("Account Password") },
-          singleLine = true,
-          isError = authError != null,
-          supportingText = authError?.let { msg -> { Text(msg) } },
-          visualTransformation =
-            if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-          trailingIcon = {
-            IconButton(onClick = { showPassword = !showPassword }) {
-              Icon(
-                imageVector =
-                  if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                contentDescription = "Toggle password visibility",
-              )
-            }
-          },
-          keyboardOptions =
-            KeyboardOptions(
-              keyboardType = KeyboardType.Password,
-              imeAction = ImeAction.Done,
-            ),
-          modifier = Modifier.fillMaxWidth().testTag("admin_firebase_password_input"),
-        )
-        Button(
-          onClick = { onSignIn(password) },
-          enabled = password.isNotBlank(),
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        OutlinedButton(
+          onClick = onCheckForUpdates,
+          enabled = !isCheckingForUpdates,
           modifier =
-            Modifier.fillMaxWidth()
-              .height(48.dp)
-              .testTag("admin_firebase_signin_button"),
+            Modifier.weight(1f)
+              .minimumInteractiveComponentSize()
+              .testTag("admin_check_updates_button"),
         ) {
-          Text("Sign in to Cloud Admin")
+          if (isCheckingForUpdates) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Checking…", maxLines = 1)
+          } else {
+            Icon(
+              imageVector = Icons.Filled.SystemUpdate,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Check for Updates", maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
+
+        OutlinedButton(
+          onClick = onSignOut,
+          modifier =
+            Modifier.minimumInteractiveComponentSize().testTag("admin_sign_out_button"),
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.Logout,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(4.dp))
+          Text("Sign out", maxLines = 1)
         }
       }
+    }
+  }
+}
+
+@Composable
+private fun AdminOrdersHeaderRow(
+  ordersState: AdminOrdersLoadState,
+  onRefresh: () -> Unit,
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Column(modifier = Modifier.weight(1f)) {
+      Text(
+        text = "Customer COD Orders",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+      )
+      Text(
+        text = "Newest first • Manual refresh",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    OutlinedButton(
+      onClick = onRefresh,
+      enabled = ordersState !is AdminOrdersLoadState.Loading,
+      modifier =
+        Modifier.minimumInteractiveComponentSize().testTag("admin_refresh_orders_button"),
+    ) {
+      Icon(
+        imageVector = Icons.Filled.Refresh,
+        contentDescription = "Refresh orders",
+        modifier = Modifier.size(18.dp),
+      )
+      Spacer(modifier = Modifier.width(6.dp))
+      Text("Refresh")
     }
   }
 }
@@ -1206,7 +1352,7 @@ private fun AdminProductRowCard(
     ) {
       CachedProductImage(
         imageRes = product.imageRes,
-        imageUri = product.imageUri,
+        imageUri = product.coverImageUrl,
         contentDescription = product.name,
         cacheKey = product.id,
         modifier = Modifier.size(72.dp).clip(MaterialTheme.shapes.small),
@@ -1236,22 +1382,37 @@ private fun AdminProductRowCard(
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
         )
-        Surface(
-          color =
-            if (product.isAvailable) MaterialTheme.colorScheme.tertiaryContainer
-            else MaterialTheme.colorScheme.errorContainer,
-          shape = CircleShape,
-        ) {
-          Text(
-            text =
-              if (product.isAvailable) "In Stock (${product.stockQuantity})"
-              else "Out of Stock",
-            style = MaterialTheme.typography.labelSmall,
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          Surface(
             color =
-              if (product.isAvailable) MaterialTheme.colorScheme.onTertiaryContainer
-              else MaterialTheme.colorScheme.onErrorContainer,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-          )
+              if (product.isAvailable) MaterialTheme.colorScheme.tertiaryContainer
+              else MaterialTheme.colorScheme.errorContainer,
+            shape = CircleShape,
+          ) {
+            Text(
+              text =
+                if (product.isAvailable) "In Stock (${product.stockQuantity})"
+                else "Out of Stock",
+              style = MaterialTheme.typography.labelSmall,
+              color =
+                if (product.isAvailable) MaterialTheme.colorScheme.onTertiaryContainer
+                else MaterialTheme.colorScheme.onErrorContainer,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+          }
+          if (product.galleryImageUrls.size > 1) {
+            Surface(
+              color = MaterialTheme.colorScheme.surfaceContainerHigh,
+              shape = CircleShape,
+            ) {
+              Text(
+                text = "${product.galleryImageUrls.size} photos",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+              )
+            }
+          }
         }
       }
 
@@ -1289,12 +1450,8 @@ private fun AdminOrderCard(
   onUpdateStatus: (OrderStatus) -> Unit,
 ) {
   val formattedTime =
-    remember(order.timestamp) {
-      if (order.timestamp <= 0L) {
-        "Time unavailable"
-      } else {
-        SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(order.timestamp))
-      }
+    remember(order.timestampIso, order.timestampMillis) {
+      formatOrderTimeForDisplay(order.timestampIso, order.timestampMillis)
     }
 
   val (badgeBg, badgeFg) =
@@ -1520,6 +1677,11 @@ private fun AdminOrderCard(
 @Composable
 private fun AdminProductEditorDialog(
   initialProduct: Product?,
+  pickedPhotos: List<PickedPhotoItem>,
+  isSaving: Boolean,
+  onStartPickedPhotoUpload: (String) -> Unit,
+  onRetryPickedPhotoUpload: (String) -> Unit,
+  onRemovePickedPhoto: (String) -> Unit,
   onDismiss: () -> Unit,
   onSave: (
     name: String,
@@ -1529,36 +1691,19 @@ private fun AdminProductEditorDialog(
     size: String,
     description: String,
     imageKey: String,
-    imageUri: String?,
-    imageUris: List<String>,
+    typedImageUrls: List<String>,
+    uploadedImageUrls: List<String>,
     inStock: Boolean,
     stockQuantity: Int,
+    onResult: (Result<Unit>) -> Unit,
   ) -> Unit,
 ) {
-  val context = LocalContext.current
   var name by remember(initialProduct) { mutableStateOf(initialProduct?.name.orEmpty()) }
   var priceText by remember(initialProduct) {
     mutableStateOf(initialProduct?.pricePkr?.toString().orEmpty())
   }
-  var categoryLabel by remember(initialProduct) {
-    mutableStateOf(
-      initialProduct?.category?.takeIf { ProductCategory.isKnownLabel(it) }
-        ?: ProductCategory.BLANKETS.label
-    )
-  }
-  var useCustomCategory by remember(initialProduct) {
-    mutableStateOf(
-      initialProduct != null && !ProductCategory.isKnownLabel(initialProduct.category)
-    )
-  }
-  var customCategory by remember(initialProduct) {
-    mutableStateOf(
-      if (initialProduct != null && !ProductCategory.isKnownLabel(initialProduct.category)) {
-        initialProduct.category
-      } else {
-        ""
-      }
-    )
+  var categoryText by remember(initialProduct) {
+    mutableStateOf(initialProduct?.category ?: ProductCategories.BLANKETS)
   }
   var fabric by remember(initialProduct) { mutableStateOf(initialProduct?.fabric.orEmpty()) }
   var size by remember(initialProduct) { mutableStateOf(initialProduct?.size.orEmpty()) }
@@ -1568,50 +1713,28 @@ private fun AdminProductEditorDialog(
   var imageKey by remember(initialProduct) {
     mutableStateOf(initialProduct?.imageKey ?: ProductCatalog.photoOptions.first().key)
   }
-  var imageUri by remember(initialProduct) { mutableStateOf(initialProduct?.imageUri) }
-  /**
-   * A photo picked from the phone gallery in this editing session. Kept
-   * separate from [imageUri] on purpose: it is a device-local content://
-   * URI and must never be saved to Firestore as-is. On save it is
-   * uploaded to free photo hosting first (see [CloudinaryUploader]) and
-   * only the returned https URL goes into the saved gallery.
-   */
-  var pickedPhotoUri by remember { mutableStateOf<Uri?>(null) }
-  var imageUrlsText by remember(initialProduct) {
-    mutableStateOf(
-      (initialProduct?.imageUris?.ifEmpty { listOfNotNull(initialProduct.imageUri) })
-        ?.joinToString("\n")
-        .orEmpty()
-    )
+  var photoUrlsText by remember(initialProduct) {
+    mutableStateOf(initialProduct?.galleryImageUrls?.joinToString("\n").orEmpty())
   }
   var inStock by remember(initialProduct) { mutableStateOf(initialProduct?.inStock ?: true) }
   var stockQtyText by remember(initialProduct) {
     mutableStateOf((initialProduct?.stockQuantity ?: 20).toString())
   }
   var errorText by remember { mutableStateOf<String?>(null) }
-  var isUploadingPhoto by remember { mutableStateOf(false) }
-  val coroutineScope = rememberCoroutineScope()
 
   val photoPickerLauncher =
     rememberLauncherForActivityResult(
       contract = ActivityResultContracts.PickVisualMedia(),
       onResult = { uri ->
         if (uri != null) {
-          runCatching {
-            context.contentResolver.takePersistableUriPermission(
-              uri,
-              Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-          }
-          // Preview only — the picked photo is NOT stored in imageUri
-          // and is never saved to Firestore (see pickedPhotoUri).
-          pickedPhotoUri = uri
+          errorText = null
+          onStartPickedPhotoUpload(uri.toString())
         }
       },
     )
 
   AlertDialog(
-    onDismissRequest = onDismiss,
+    onDismissRequest = { if (!isSaving) onDismiss() },
     title = {
       Text(
         text = if (initialProduct == null) "Add Product" else "Edit Product",
@@ -1657,46 +1780,32 @@ private fun AdminProductEditorDialog(
           style = MaterialTheme.typography.labelLarge,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          listOf(ProductCategory.BLANKETS, ProductCategory.MENS_SUITS).forEach { cat ->
+          listOf(ProductCategories.BLANKETS, ProductCategories.MENS_SUITS).forEach { cat ->
             FilterChip(
-              selected = !useCustomCategory && categoryLabel == cat.label,
+              selected = categoryText.equals(cat, ignoreCase = true),
               onClick = {
-                useCustomCategory = false
-                categoryLabel = cat.label
+                categoryText = cat
                 errorText = null
               },
-              label = { Text(cat.label) },
-              modifier = Modifier.testTag("admin_category_chip_${cat.name.lowercase()}"),
+              label = { Text(cat) },
             )
           }
-          FilterChip(
-            selected = useCustomCategory,
-            onClick = {
-              useCustomCategory = true
-              errorText = null
-            },
-            label = { Text("Other…") },
-            modifier = Modifier.testTag("admin_category_chip_other"),
-          )
         }
-
-        if (useCustomCategory) {
-          OutlinedTextField(
-            value = customCategory,
-            onValueChange = {
-              customCategory = it
-              errorText = null
-            },
-            label = { Text("Custom Category (e.g. Bedsheets, Curtains)") },
-            singleLine = true,
-            keyboardOptions =
-              KeyboardOptions(
-                capitalization = KeyboardCapitalization.Words,
-                imeAction = ImeAction.Next,
-              ),
-            modifier = Modifier.fillMaxWidth().testTag("admin_product_custom_category_input"),
-          )
-        }
+        OutlinedTextField(
+          value = categoryText,
+          onValueChange = {
+            categoryText = it
+            errorText = null
+          },
+          label = { Text("Category Name (or type custom)") },
+          singleLine = true,
+          keyboardOptions =
+            KeyboardOptions(
+              capitalization = KeyboardCapitalization.Words,
+              imeAction = ImeAction.Next,
+            ),
+          modifier = Modifier.fillMaxWidth().testTag("admin_product_category_input"),
+        )
 
         OutlinedTextField(
           value = fabric,
@@ -1765,16 +1874,68 @@ private fun AdminProductEditorDialog(
           )
         }
 
-        Text("Product Photo", style = MaterialTheme.typography.labelLarge)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Text("Product Photos", style = MaterialTheme.typography.labelLarge)
+
+        OutlinedButton(
+          onClick = {
+            photoPickerLauncher.launch(
+              PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+          },
+          modifier = Modifier.fillMaxWidth().testTag("admin_pick_photo_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.PhotoLibrary,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text("Choose Photo from Gallery")
+        }
+
+        if (pickedPhotos.isNotEmpty()) {
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            pickedPhotos.forEach { item ->
+              PickedPhotoStatusRow(
+                item = item,
+                fallbackImageRes =
+                  ProductCatalog.resolveDrawableForKey(imageKey, categoryText),
+                onRetry = { onRetryPickedPhotoUpload(item.id) },
+                onRemove = { onRemovePickedPhoto(item.id) },
+              )
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = photoUrlsText,
+          onValueChange = {
+            photoUrlsText = it
+            errorText = null
+          },
+          label = { Text("Photo URLs (one per line)") },
+          placeholder = { Text("https://res.cloudinary.com/...") },
+          minLines = 2,
+          maxLines = 5,
+          modifier = Modifier.fillMaxWidth().testTag("admin_product_photo_urls_input"),
+        )
+
+        Text(
+          text = "Fallback Placeholder Icon",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Row(
           modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           ProductCatalog.photoOptions.forEach { option ->
-            val isSelected = imageUri == null && imageKey == option.key
+            val isSelected = imageKey == option.key
             Box(
               modifier =
-                Modifier.size(60.dp)
+                Modifier.size(56.dp)
                   .clip(MaterialTheme.shapes.small)
                   .border(
                     width = if (isSelected) 2.5.dp else 1.dp,
@@ -1783,10 +1944,7 @@ private fun AdminProductEditorDialog(
                       else MaterialTheme.colorScheme.outlineVariant,
                     shape = MaterialTheme.shapes.small,
                   )
-                  .clickable {
-                    imageUri = null
-                    imageKey = option.key
-                  },
+                  .clickable { imageKey = option.key },
             ) {
               CachedProductImage(
                 imageRes = option.imageRes,
@@ -1797,91 +1955,6 @@ private fun AdminProductEditorDialog(
             }
           }
         }
-
-        OutlinedButton(
-          onClick = {
-            photoPickerLauncher.launch(
-              PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-            )
-          },
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Icon(
-            imageVector = Icons.Filled.PhotoLibrary,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(modifier = Modifier.width(8.dp))
-          Text(
-            if (pickedPhotoUri != null) "Custom Photo Selected (Change)"
-            else "Choose Photo from Gallery"
-          )
-        }
-
-        if (pickedPhotoUri != null) {
-          // Preview of the picked phone photo, so the admin can see what
-          // was chosen. It is uploaded to free photo hosting when the
-          // product is saved, so it will appear on the website too.
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            Box(
-              modifier =
-                Modifier.size(60.dp)
-                  .clip(MaterialTheme.shapes.small)
-                  .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    shape = MaterialTheme.shapes.small,
-                  ),
-            ) {
-              CachedProductImage(
-                imageRes = ProductCatalog.photoOptions.first().imageRes,
-                imageUri = pickedPhotoUri.toString(),
-                contentDescription = "Picked photo preview",
-                cacheKey = "picked_${pickedPhotoUri}",
-                modifier = Modifier.fillMaxSize(),
-              )
-            }
-            Text(
-              text = "Picked photo",
-              style = MaterialTheme.typography.bodySmall,
-              modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { pickedPhotoUri = null }) {
-              Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "Remove picked photo",
-              )
-            }
-          }
-          Text(
-            text =
-              "This photo will be uploaded to free photo hosting when you save, so it will appear on the website too. Remove it with the X if you don't want it.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-
-        OutlinedTextField(
-          value = imageUrlsText,
-          onValueChange = {
-            imageUrlsText = it
-            errorText = null
-          },
-          label = { Text("Photo URLs (one per line)") },
-          placeholder = { Text("https://... (first URL is the cover photo)") },
-          minLines = 2,
-          maxLines = 4,
-          modifier = Modifier.fillMaxWidth().testTag("admin_product_image_urls_input"),
-        )
-        Text(
-          text =
-            "Add up to 4 photo links, one per line — the detail screen shows them as a swipeable gallery. A built-in photo above is used only when no photo URL is set.",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
 
         if (errorText != null) {
           Text(
@@ -1894,87 +1967,298 @@ private fun AdminProductEditorDialog(
     },
     confirmButton = {
       Button(
+        enabled = !isSaving,
         onClick = {
           val parsedPrice = priceText.toIntOrNull()
           val parsedQty = stockQtyText.toIntOrNull() ?: 0
-          val effectiveCategory =
-            if (useCustomCategory) customCategory.trim() else categoryLabel
-          // Saves with the uploaded photo URL first (when one was just
-          // uploaded), then the remote cover / typed URLs. First entry is
-          // the cover photo. A device-local content:// URI is never in
-          // here — only remote https URLs are saved. (Price is a
-          // parameter so the null-check smart cast still applies.)
-          val saveWithPhoto: (String?, Int) -> Unit = { uploadedPhotoUrl, price ->
-            val gallery =
-              buildList {
-                uploadedPhotoUrl?.let { add(it) }
-                addAll(buildAdminGallery(imageUri, imageUrlsText))
-              }.distinct()
-            onSave(
-              name,
-              price,
-              effectiveCategory,
-              fabric,
-              size,
-              description,
-              imageKey,
-              gallery.firstOrNull(),
-              gallery,
-              inStock,
-              parsedQty,
-            )
-          }
+          val typedLines =
+            photoUrlsText
+              .lines()
+              .map { it.trim() }
+              .filter { it.isNotEmpty() }
+          val hasUploadingPhoto = pickedPhotos.any { it.status is PickedPhotoStatus.Uploading }
+          val hasFailedPhoto = pickedPhotos.any { it.status is PickedPhotoStatus.Failed }
+          val hasLocalUri =
+            typedLines.any {
+              it.startsWith("content://", ignoreCase = true) ||
+                it.startsWith("file://", ignoreCase = true)
+            }
+          val hasInvalidUrl = typedLines.any { !isValidRemoteImageUrl(it) }
+
           when {
             name.isBlank() -> errorText = "Product name is required."
             parsedPrice == null || parsedPrice <= 0 ->
               errorText = "Enter a valid price in PKR."
-            useCustomCategory && effectiveCategory.isBlank() ->
-              errorText = "Enter a custom category name."
-            effectiveCategory.equals(ProductCategory.ALL.label, ignoreCase = true) ->
-              errorText = "\"All\" cannot be used as a category name."
-            effectiveCategory.length > 40 ->
-              errorText = "Category name must be 40 characters or fewer."
+            categoryText.isBlank() -> errorText = "Category is required."
             fabric.isBlank() -> errorText = "Fabric detail is required."
             size.isBlank() -> errorText = "Size / cutting detail is required."
             description.isBlank() -> errorText = "Full description is required."
             inStock && parsedQty <= 0 -> errorText = "Enter stock quantity greater than 0."
+            hasUploadingPhoto -> errorText = "Uploading photo… please wait before saving."
+            hasFailedPhoto ->
+              errorText = "A picked photo failed to upload. Retry or remove it before saving."
+            hasLocalUri ->
+              errorText =
+                "Local content:// or file:// URIs cannot be saved. Choose from Gallery to upload or use https:// URLs."
+            hasInvalidUrl ->
+              errorText = "Every Photo URL must start with https:// or http://."
             else -> {
-              // Upload-first: a photo picked from the phone is a
-              // device-local content:// URI, so upload it to free photo
-              // hosting first and save only the returned https URL.
-              val picked = pickedPhotoUri
-              if (picked == null) {
-                saveWithPhoto(null, parsedPrice)
-              } else {
-                errorText = null
-                isUploadingPhoto = true
-                coroutineScope.launch {
-                  val result = CloudinaryUploader.uploadPhoto(context, picked)
-                  isUploadingPhoto = false
-                  result
-                    .onSuccess { uploadedUrl -> saveWithPhoto(uploadedUrl, parsedPrice) }
-                    .onFailure { error ->
-                      errorText =
-                        "Photo upload failed: ${error.message ?: "try again"}. " +
-                          "The product was not saved."
-                    }
+              val uploadedUrls =
+                pickedPhotos.mapNotNull { (it.status as? PickedPhotoStatus.Uploaded)?.secureUrl }
+              onSave(
+                name,
+                parsedPrice,
+                categoryText,
+                fabric,
+                size,
+                description,
+                imageKey,
+                typedLines,
+                uploadedUrls,
+                inStock,
+                parsedQty,
+              ) { result ->
+                if (result.isFailure) {
+                  errorText =
+                    result.exceptionOrNull()?.localizedMessage?.takeIf { it.isNotBlank() }
+                      ?: "Could not save product."
                 }
               }
             }
           }
         },
-        enabled = !isUploadingPhoto,
         modifier = Modifier.testTag("admin_save_product_button"),
       ) {
-        Text(if (isUploadingPhoto) "Uploading photo…" else "Save Product")
+        if (isSaving) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.onPrimary,
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Saving…")
+        } else {
+          Text("Save Product")
+        }
       }
     },
     dismissButton = {
-      TextButton(onClick = onDismiss) {
+      TextButton(onClick = onDismiss, enabled = !isSaving) {
         Text("Cancel")
       }
     },
   )
+}
+
+@Composable
+private fun PickedPhotoStatusRow(
+  item: PickedPhotoItem,
+  fallbackImageRes: Int,
+  onRetry: () -> Unit,
+  onRemove: () -> Unit,
+) {
+  Surface(
+    color = MaterialTheme.colorScheme.surfaceContainerLow,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    shape = MaterialTheme.shapes.small,
+    modifier = Modifier.fillMaxWidth().testTag("picked_photo_${item.id}"),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      CachedProductImage(
+        imageRes = fallbackImageRes,
+        imageUri =
+          when (val status = item.status) {
+            is PickedPhotoStatus.Uploaded -> status.secureUrl
+            else -> item.localUri
+          },
+        contentDescription = "Selected product photo",
+        cacheKey = "picked_${item.id}",
+        modifier = Modifier.size(48.dp).clip(MaterialTheme.shapes.small),
+      )
+
+      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        when (val status = item.status) {
+          PickedPhotoStatus.Uploading -> {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+              Text(
+                text = "Uploading photo…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+              )
+            }
+          }
+
+          is PickedPhotoStatus.Uploaded -> {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text = "Uploaded to cloud",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                fontWeight = FontWeight.Medium,
+              )
+            }
+          }
+
+          is PickedPhotoStatus.Failed -> {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text = status.errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+        }
+      }
+
+      if (item.status is PickedPhotoStatus.Failed) {
+        IconButton(
+          onClick = onRetry,
+          modifier = Modifier.minimumInteractiveComponentSize(),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Refresh,
+            contentDescription = "Retry upload",
+            tint = MaterialTheme.colorScheme.primary,
+          )
+        }
+      }
+
+      IconButton(
+        onClick = onRemove,
+        modifier =
+          Modifier.minimumInteractiveComponentSize().testTag("remove_picked_photo_${item.id}"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Close,
+          contentDescription = "Remove photo",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun ManualUpdateResultDialog(
+  state: ManualUpdateDialogState,
+  onOpenUrl: (String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  when (state) {
+    is ManualUpdateDialogState.Available -> {
+      AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.SystemUpdate,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+          )
+        },
+        title = { Text("Update available") },
+        text = {
+          Text(
+            "Version ${state.info.latestVersionCode} of GharBazar is available. Tap Update to open the download page in your browser, or Later to dismiss."
+          )
+        },
+        confirmButton = {
+          Button(
+            onClick = { onOpenUrl(state.info.apkUrl) },
+            modifier = Modifier.testTag("update_dialog_update_button"),
+          ) {
+            Text("Update")
+          }
+        },
+        dismissButton = {
+          TextButton(
+            onClick = onDismiss,
+            modifier = Modifier.testTag("update_dialog_later_button"),
+          ) {
+            Text("Later")
+          }
+        },
+        modifier = Modifier.testTag("update_available_dialog"),
+      )
+    }
+
+    ManualUpdateDialogState.UpToDate -> {
+      AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.CheckCircle,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.tertiary,
+          )
+        },
+        title = { Text("App is up to date") },
+        text = {
+          Text("You are running the latest version of GharBazar.")
+        },
+        confirmButton = {
+          Button(
+            onClick = onDismiss,
+            modifier = Modifier.testTag("update_uptodate_ok_button"),
+          ) {
+            Text("OK")
+          }
+        },
+        modifier = Modifier.testTag("update_uptodate_dialog"),
+      )
+    }
+
+    is ManualUpdateDialogState.Failed -> {
+      AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+          Icon(
+            imageVector = Icons.Filled.CloudOff,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+          )
+        },
+        title = { Text("Update check failed") },
+        text = {
+          Text(state.message)
+        },
+        confirmButton = {
+          Button(onClick = onDismiss) {
+            Text("OK")
+          }
+        },
+      )
+    }
+  }
 }
 
 @Composable
