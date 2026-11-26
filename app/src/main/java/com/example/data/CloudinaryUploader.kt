@@ -10,7 +10,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 /**
  * Uploads product photos picked from the phone gallery to Cloudinary's
@@ -45,13 +44,22 @@ object CloudinaryUploader {
 
   /**
    * Pulls the `secure_url` out of a Cloudinary upload response, or null
-   * when the response has none (e.g. an error payload).
+   * when the response has none (e.g. an error payload). Plain string
+   * parsing on purpose, no org.json: Android's org.json is only a stub
+   * in plain JVM unit tests, so a JSONObject here would make this helper
+   * untestable (it threw "Stub!" and failed the test in run #11).
    */
-  fun parseSecureUrl(responseJson: String): String? =
-    runCatching {
-        JSONObject(responseJson).optString("secure_url").takeIf { it.isNotBlank() }
-      }
-      .getOrNull()
+  fun parseSecureUrl(responseJson: String): String? {
+    val keyIndex = responseJson.indexOf("\"secure_url\"")
+    if (keyIndex < 0) return null
+    val colonIndex = responseJson.indexOf(':', keyIndex)
+    if (colonIndex < 0) return null
+    val firstQuote = responseJson.indexOf('"', colonIndex)
+    if (firstQuote < 0) return null
+    val secondQuote = responseJson.indexOf('"', firstQuote + 1)
+    if (secondQuote < 0) return null
+    return responseJson.substring(firstQuote + 1, secondQuote).takeIf { it.isNotBlank() }
+  }
 
   /**
    * Scales (width, height) down so the longest side is at most
