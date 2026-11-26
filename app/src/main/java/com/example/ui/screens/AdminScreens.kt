@@ -1770,6 +1770,7 @@ private fun AdminProductEditorDialog(
                   ),
             ) {
               CachedProductImage(
+                imageRes = ProductCatalog.photoOptions.first().imageRes,
                 imageUri = pickedPhotoUri.toString(),
                 contentDescription = "Picked photo preview",
                 cacheKey = "picked_${pickedPhotoUri}",
