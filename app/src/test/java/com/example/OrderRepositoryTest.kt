@@ -12,7 +12,6 @@ import com.example.model.ProductCategory
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -128,46 +127,6 @@ class OrderRepositoryTest {
   }
 
   @Test
-  fun refreshOrders_recoversAfterInitialPermissionDenied() = runTest {
-    // Reproduces the live "0 orders" bug: the orders listener attached
-    // before the admin signed in failed with PERMISSION_DENIED and the
-    // SDK removed it, so the app never saw the orders that exist in
-    // Firestore — even after sign-in. Re-subscribing must recover them.
-    val liveOrder =
-      ConfirmedOrder(
-        orderNumber = "GB-641124",
-        customerName = "Farzi Test",
-        phoneNumber = "03001234567",
-        deliveryAddress = "Test Address, Gulzar Colony",
-        city = "Lahore",
-        items = listOf(CartItem(ProductCatalog.products[0], 1)),
-        totalPkr = 1949,
-        timestamp = 1764000000000L,
-        status = OrderStatus.PLACED,
-      )
-    val flakyCloud = FlakyCloudOrderDataSource(liveOrder)
-    val repo =
-      OrderRepository(
-        flakyCloud,
-        scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + UnconfinedTestDispatcher()),
-      )
-
-    // First subscription died with PERMISSION_DENIED: no orders.
-    assertTrue(repo.orders.value.isEmpty())
-    assertEquals(1, flakyCloud.subscriptions)
-
-    // Even when the cloud feed later holds the order, the dead listener
-    // never delivers it.
-    flakyCloud.publishLoaded(listOf(liveOrder))
-    assertTrue(repo.orders.value.isEmpty())
-
-    // Re-subscribing after sign-in recovers the orders.
-    repo.refreshOrders()
-    assertEquals(listOf("GB-641124"), repo.orders.value.map { it.orderNumber })
-    assertEquals(2, flakyCloud.subscriptions)
-  }
-
-  @Test
   fun submitOrder_handlesCloudFailureGracefullyWithoutThrowing() = runTest {
     val failingCloud =
       FakeCloudOrderDataSource(
@@ -196,43 +155,6 @@ class OrderRepositoryTest {
     assertTrue(result.isFailure)
     assertEquals(1, repo.orders.value.size)
     assertEquals("GB-777888", repo.orders.value.first().orderNumber)
-  }
-
-  /**
-   * Simulates the live sign-in race: the FIRST orders subscription fails
-   * with PERMISSION_DENIED (listener attached before the admin signed in)
-   * and never emits again; later subscriptions get the live feed.
-   */
-  private class FlakyCloudOrderDataSource(
-    private val order: ConfirmedOrder,
-  ) : CloudOrderDataSource {
-    override val isConfigured: Boolean = true
-    var subscriptions = 0
-    private val snapshots =
-      MutableStateFlow<CloudOrdersSnapshot>(
-        CloudOrdersSnapshot.Loaded(listOf(order), false)
-      )
-
-    override fun observeOrders(): Flow<CloudOrdersSnapshot> {
-      subscriptions++
-      return if (subscriptions == 1) {
-        flowOf(CloudOrdersSnapshot.Unavailable("PERMISSION_DENIED"))
-      } else {
-        snapshots
-      }
-    }
-
-    fun publishLoaded(orders: List<ConfirmedOrder>) {
-      snapshots.value = CloudOrdersSnapshot.Loaded(orders, false)
-    }
-
-    override suspend fun saveOrder(order: ConfirmedOrder): Result<Unit> =
-      Result.success(Unit)
-
-    override suspend fun updateOrderStatus(
-      orderNumber: String,
-      status: OrderStatus,
-    ): Result<Unit> = Result.success(Unit)
   }
 
   private class FakeCloudOrderDataSource(

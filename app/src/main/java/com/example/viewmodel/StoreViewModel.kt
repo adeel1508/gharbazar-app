@@ -166,13 +166,6 @@ class StoreViewModel(
             adminAuthError = if (signedIn) null else it.adminAuthError,
           )
         }
-        // Orders are only readable by a signed-in admin, and a listener
-        // attached before sign-in dies with PERMISSION_DENIED and never
-        // recovers — so re-subscribe now that the admin is signed in.
-        // (Also fires once at startup when a session is already restored.)
-        if (signedIn) {
-          orderRepository.refreshOrders()
-        }
       }
     }
   }
@@ -499,18 +492,9 @@ class StoreViewModel(
     val resolvedRes = ProductCatalog.resolveDrawableForKey(imageKey, normalizedCategory)
     // The gallery is the cleaned URL list; the cover is the first gallery
     // photo (or the single imageUri when no list was given).
-    // Only remote (http/https) URLs are ever persisted: a photo picked from
-    // the phone is a device-local content:// URI — the admin form uploads
-    // it to free photo hosting first and saves only the returned https
-    // URL. This filter is the last line of defence against a stray local
-    // link reaching Firestore, where it would be broken on the website
-    // and on every other device.
     val cleanImageUris =
       imageUris.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        .filter { it.startsWith("http://") || it.startsWith("https://") }
-    val coverUri =
-      imageUri?.takeIf { it.isNotBlank() && (it.startsWith("http://") || it.startsWith("https://")) }
-        ?: cleanImageUris.firstOrNull()
+    val coverUri = imageUri?.takeIf { it.isNotBlank() } ?: cleanImageUris.firstOrNull()
     val galleryUris =
       if (coverUri != null && coverUri !in cleanImageUris) listOf(coverUri) + cleanImageUris
       else cleanImageUris
