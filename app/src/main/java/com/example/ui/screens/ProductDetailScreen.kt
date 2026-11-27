@@ -305,7 +305,11 @@ private fun ProductSwipeableGallery(
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
       shadowElevation = 2.dp,
     ) {
-      Box(modifier = Modifier.fillMaxSize()) {
+      Box(
+        modifier =
+          Modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+      ) {
         HorizontalPager(
           state = pagerState,
           modifier = Modifier.fillMaxSize().testTag("detail_photo_pager"),
@@ -317,7 +321,7 @@ private fun ProductSwipeableGallery(
             contentDescription = "${product.name} photo ${page + 1}",
             cacheKey = "${product.id}_$page",
             modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
+            contentScale = ContentScale.Fit,
           )
         }
 
