@@ -55,7 +55,6 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -257,11 +256,11 @@ private fun MarketplaceTopHeader(
     Row(
       modifier = Modifier.weight(1f),
       verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       Box(
         modifier =
-          Modifier.size(40.dp)
+          Modifier.size(36.dp)
             .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.primary),
         contentAlignment = Alignment.Center,
@@ -270,13 +269,13 @@ private fun MarketplaceTopHeader(
           imageVector = Icons.Filled.Storefront,
           contentDescription = null,
           tint = MaterialTheme.colorScheme.onPrimary,
-          modifier = Modifier.size(22.dp),
+          modifier = Modifier.size(20.dp),
         )
       }
       Column {
         Text(
           text = stringResource(R.string.app_name),
-          style = MaterialTheme.typography.headlineSmall,
+          style = MaterialTheme.typography.titleLarge,
           color = MaterialTheme.colorScheme.onBackground,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
@@ -317,24 +316,24 @@ private fun MarketplaceTopHeader(
         }
       }
 
-      OutlinedButton(
+      Surface(
         onClick = onOpenSellerAdmin,
         shape = CircleShape,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.minimumInteractiveComponentSize().testTag("seller_admin_button"),
       ) {
-        Icon(
-          imageVector = Icons.Filled.AdminPanelSettings,
-          contentDescription = "Seller / Admin",
-          modifier = Modifier.size(16.dp),
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-          text = "Seller / Admin",
-          style = MaterialTheme.typography.labelMedium,
-          maxLines = 1,
-        )
+        Box(
+          modifier = Modifier.size(44.dp),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.AdminPanelSettings,
+            contentDescription = "Seller / Admin",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+          )
+        }
       }
 
       Surface(
